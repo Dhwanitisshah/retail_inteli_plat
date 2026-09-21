@@ -1,0 +1,50 @@
+{
+  "cameras": {
+    "entrance_cam": {
+      "source": 0,
+      "tripwires": [
+        { "name": "main_entrance", "p1": [50, 400], "p2": [590, 400] }
+      ]
+    },
+    "checkout_cam": {
+      "source": 0,
+      "queues": [
+        {
+          "lane_id": "counter_01",
+          "polygon": [[20, 20], [300, 20], [300, 460], [20, 460]],
+          "active_cashiers": 1,
+          "avg_service_time_seconds": 90
+        }
+      ]
+    },
+    "shelf_cam": {
+      "source": 0,
+      "shelf_slots": [
+        {
+          "aisle_id": "AISLE_04",
+          "shelf_tier": 2,
+          "slot_id": "A4_T2_S1",
+          "sku_id": "SKU_8901030",
+          "rect": [0, 100, 210, 150],
+          "expected_facings": 3
+        },
+        {
+          "aisle_id": "AISLE_04",
+          "shelf_tier": 2,
+          "slot_id": "A4_T2_S2",
+          "sku_id": "SKU_8902140",
+          "rect": [210, 100, 210, 150],
+          "expected_facings": 3
+        },
+        {
+          "aisle_id": "AISLE_04",
+          "shelf_tier": 2,
+          "slot_id": "A4_T2_S3",
+          "sku_id": "SKU_8903511",
+          "rect": [420, 100, 210, 150],
+          "expected_facings": 3
+        }
+      ]
+    }
+  }
+}

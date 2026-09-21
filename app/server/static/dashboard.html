@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Edge Retail Intelligence — Store Floor</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #131c2e; --panel-border: #223049;
+    --text: #e6edf6; --muted: #8b9bb4; --accent: #3ea6ff;
+    --ok: #2ecf6d; --warn: #f5b700; --crit: #ff4d4f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--panel-border);
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  #conn-badge {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--panel-border);
+  }
+  #conn-badge.live { color: var(--ok); border-color: var(--ok); }
+  #conn-badge.down { color: var(--crit); border-color: var(--crit); }
+  main { padding: 20px 24px; display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  section {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px 18px;
+  }
+  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  .stat-row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .stat { flex: 1; min-width: 100px; }
+  .stat .value { font-size: 30px; font-weight: 700; }
+  .stat .label { font-size: 12px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--muted); font-weight: 500; }
+  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .badge.ok { background: rgba(46,207,109,.15); color: var(--ok); }
+  .badge.warn { background: rgba(245,183,0,.15); color: var(--warn); }
+  .badge.crit { background: rgba(255,77,79,.15); color: var(--crit); }
+  #alert-feed { max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .alert-item { border-left: 3px solid var(--accent); padding: 8px 10px; background: #0e1626; border-radius: 6px; font-size: 13px; }
+  .alert-item.P1 { border-color: var(--crit); }
+  .alert-item.P2 { border-color: var(--warn); }
+  .alert-item .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Edge Retail Intelligence Platform</h1>
+    <div class="sub" id="store-sub">store — · gateway —</div>
+  </div>
+  <div id="conn-badge" class="down">connecting…</div>
+</header>
+
+<main>
+  <section>
+    <h2>Footfall</h2>
+    <div class="stat-row">
+      <div class="stat"><div class="value" id="ff-in">0</div><div class="label">Inbound</div></div>
+      <div class="stat"><div class="value" id="ff-out">0</div><div class="label">Outbound</div></div>
+      <div class="stat"><div class="value" id="ff-inside">0</div><div class="label">Currently Inside</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Checkout Queues</h2>
+    <table id="queue-table">
+      <thead><tr><th>Lane</th><th>People</th><th>Qualifying</th><th>Est. Wait</th><th>Status</th></tr></thead>
+      <tbody><tr><td colspan="5" class="empty">No queue telemetry yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Shelf Compliance</h2>
+    <table id="shelf-table">
+      <thead><tr><th>Slot</th><th>SKU</th><th>Void Ratio</th><th>Fill Ratio</th><th>Status</th></tr></thead>
+      <tbody><tr><td colspan="5" class="empty">No shelf telemetry yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <section style="grid-column: 1 / -1;">
+    <h2>Live Alert Feed</h2>
+    <div id="alert-feed"><div class="empty">Waiting for alerts…</div></div>
+  </section>
+</main>
+
+<script>
+  const connBadge = document.getElementById('conn-badge');
+  const alertFeed = document.getElementById('alert-feed');
+  let alertCount = 0;
+
+  function fmtSeconds(s) {
+    if (s === null || s === undefined) return '—';
+    s = Math.round(s);
+    if (s < 60) return s + 's';
+    return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  }
+
+  function renderState(data) {
+    document.getElementById('ff-in').textContent = data.footfall.total_in;
+    document.getElementById('ff-out').textContent = data.footfall.total_out;
+    document.getElementById('ff-inside').textContent = data.footfall.inside_count;
+
+    const queues = Object.values(data.queues || {});
+    const qBody = document.querySelector('#queue-table tbody');
+    if (queues.length === 0) {
+      qBody.innerHTML = '<tr><td colspan="5" class="empty">No queue telemetry yet.</td></tr>';
+    } else {
+      qBody.innerHTML = queues.map(q => {
+        const status = q.alert_triggered
+          ? '<span class="badge crit">SURGE</span>'
+          : (q.qualifying_shoppers >= (q.threshold || 4) ? '<span class="badge warn">BUILDING</span>' : '<span class="badge ok">NORMAL</span>');
+        return `<tr><td>${q.lane_id}</td><td>${q.people_count}</td><td>${q.qualifying_shoppers}</td><td>${fmtSeconds(q.estimated_wait_seconds)}</td><td>${status}</td></tr>`;
+      }).join('');
+    }
+
+    const slots = Object.values(data.shelf_slots || {});
+    const sBody = document.querySelector('#shelf-table tbody');
+    if (slots.length === 0) {
+      sBody.innerHTML = '<tr><td colspan="5" class="empty">No shelf telemetry yet.</td></tr>';
+    } else {
+      sBody.innerHTML = slots.map(s => {
+        let status = '<span class="badge ok">OK</span>';
+        if (s.out_of_stock_alert) status = '<span class="badge crit">OUT OF STOCK</span>';
+        else if (s.low_stock_warning) status = '<span class="badge warn">LOW STOCK</span>';
+        return `<tr><td>${s.slot_id}</td><td>${s.sku_id}</td><td>${(s.void_ratio*100).toFixed(0)}%</td><td>${(s.fill_ratio*100).toFixed(0)}%</td><td>${status}</td></tr>`;
+      }).join('');
+    }
+  }
+
+  function renderAlert(evt) {
+    if (alertCount === 0) alertFeed.innerHTML = '';
+    alertCount++;
+    const div = document.createElement('div');
+    div.className = 'alert-item ' + evt.priority;
+    const time = new Date(evt.timestamp).toLocaleTimeString();
+    div.innerHTML = `<div>[${evt.priority}] ${evt.event_type} — ${evt.message}</div><div class="meta">${time}</div>`;
+    alertFeed.prepend(div);
+    while (alertFeed.children.length > 50) alertFeed.removeChild(alertFeed.lastChild);
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+    ws.onopen = () => { connBadge.textContent = 'live'; connBadge.className = 'live'; };
+    ws.onclose = () => { connBadge.textContent = 'reconnecting…'; connBadge.className = 'down'; setTimeout(connect, 2000); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (msg) => {
+      const parsed = JSON.parse(msg.data);
+      if (parsed.type === 'state') renderState(parsed.data);
+      else if (parsed.type === 'alert') renderAlert(parsed.data);
+    };
+  }
+
+  fetch('/api/health').then(r => r.json()).then(h => {
+    document.getElementById('store-sub').textContent = `store ${h.store_id} · gateway ${h.gateway_id}`;
+  }).catch(() => {});
+
+  connect();
+</script>
+</body>
+</html>

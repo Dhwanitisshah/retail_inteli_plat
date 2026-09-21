@@ -1,0 +1,12 @@
+# Core runtime (default "motion" tracker backend -- no GPU/ML weights needed)
+opencv-python>=4.8,<5
+numpy>=1.24
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+websockets>=12,<13
+
+# Optional production backend: real YOLOv8n + ByteTrack detection/tracking
+# (Section 3.1 of the spec). Not required for the default demo.
+#   pip install -r requirements-yolo.txt
+# ultralytics>=8.2,<9
+# torch>=2.2,<3
