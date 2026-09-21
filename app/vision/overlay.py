@@ -38,6 +38,8 @@ def draw_shelf_slots(frame, slot_states):
         )
         cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
         label = f"{state.slot.slot_id} void={state.void_ratio:.2f}"
+        if state.gap_cm is not None:
+            label += f" gap {state.gap_cm:.0f}cm"
         cv2.putText(frame, label, (x, max(0, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     color, 1, cv2.LINE_AA)
 

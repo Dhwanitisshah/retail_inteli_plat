@@ -2,6 +2,7 @@
   "cameras": {
     "entrance_cam": {
       "source": 0,
+      "heatmap": true,
       "tripwires": [
         { "name": "main_entrance", "p1": [50, 400], "p2": [590, 400] }
       ]
@@ -19,6 +20,12 @@
     },
     "shelf_cam": {
       "source": 0,
+      "calibration": {
+        "mode": "static",
+        "_comment": "4 pixel<->cm point correspondences on the shelf-tier plane, measured once with a tape at install time. Swap mode to 'aruco' + 'markers' to auto-heal against camera drift instead.",
+        "pixel_points": [[0, 100], [630, 100], [630, 250], [0, 250]],
+        "metric_points_cm": [[0, 0], [180, 0], [180, 45], [0, 45]]
+      },
       "shelf_slots": [
         {
           "aisle_id": "AISLE_04",

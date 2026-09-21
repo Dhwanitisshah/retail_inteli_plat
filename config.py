@@ -16,6 +16,14 @@ class QueueConfig:
     confirmation_window: float = 120.0 # CONFIRMATION_WINDOW: congestion must persist this long
     surge_rate: float = 0.20           # >20% inbound footfall surge also triggers an alert
 
+    # Predictive Congestion Index engine: CI = lambda / (c_active * mu)
+    arrival_window_seconds: float = 300.0     # rolling window used to estimate arrival rate (lambda)
+    forecast_horizon_seconds: float = 300.0   # how far ahead predicted_queue_depth looks
+    ci_warning_threshold: float = 0.70        # 0.70 <= CI < 1.00 -> informational warning
+    ci_critical_threshold: float = 1.00       # CI >= 1.00 (or predicted depth > 4) -> open lanes now
+    ci_idle_threshold: float = 0.35           # CI sustained below this -> recommend closing a lane
+    ci_idle_sustained_seconds: float = 600.0  # "sustained" = 10 minutes per the spec
+
 
 @dataclass
 class ShelfConfig:

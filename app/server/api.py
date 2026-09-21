@@ -18,8 +18,8 @@ import logging
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, Response
 
 from app.database import Database
 from app.alerts.dispatcher import AlertDispatcher
@@ -65,6 +65,15 @@ def create_app(db: Database, dispatcher: AlertDispatcher) -> FastAPI:
     @app.get("/api/shelf/alerts")
     async def shelf_alerts(limit: int = 100):
         return db.active_shelf_alerts(limit=limit)
+
+    @app.get("/api/heatmap/{camera_name}/{layer}.png")
+    async def heatmap_png(camera_name: str, layer: str):
+        if layer not in ("traffic", "dwell"):
+            raise HTTPException(status_code=400, detail="layer must be 'traffic' or 'dwell'")
+        png_bytes = LIVE_STATE.get_heatmap_png(camera_name, layer)
+        if png_bytes is None:
+            raise HTTPException(status_code=404, detail=f"no heatmap yet for camera '{camera_name}'")
+        return Response(content=png_bytes, media_type="image/png")
 
     @app.websocket("/ws/live")
     async def ws_live(websocket: WebSocket):

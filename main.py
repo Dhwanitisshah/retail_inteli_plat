@@ -12,6 +12,7 @@ Usage:
     python main.py --entrance-source demo.mp4 --only entrance_cam --loop
     python main.py --detector yolo                 # swap in the production YOLOv8+ByteTrack backend
     python main.py --show                          # open local debug overlay window(s)
+    python main.py --show --ocr                    # also overlay shelf-tag OCR text (needs pytesseract + Tesseract)
     python main.py --no-server                     # run the vision pipeline only, no dashboard/API
 """
 import argparse
@@ -23,14 +24,19 @@ import time
 import cv2
 import uvicorn
 
-from app.alerts.dispatcher import AlertDispatcher, AlertEvent, PRIORITY_P1, PRIORITY_P2
+from app.alerts.dispatcher import AlertDispatcher, AlertEvent, PRIORITY_P1, PRIORITY_P2, PRIORITY_P4
 from app.database import Database
 from app.geometry import Polygon, Tripwire
 from app.server.api import create_app
 from app.state import LIVE_STATE
 from app.vision.footfall import FootfallCounter
+from app.vision.heatmap import HeatmapAccumulator
+from app.vision.homography import ArucoHomographyCalibrator, PlanarHomography
+from app.vision.ocr import LabelReader
 from app.vision.overlay import draw_polygons, draw_shelf_slots, draw_tracks, draw_tripwires
-from app.vision.queue_monitor import QueueMonitor
+from app.vision.queue_monitor import (
+    QueueMonitor, RECOMMENDATION_CRITICAL, RECOMMENDATION_IDLE, RECOMMENDATION_WARNING,
+)
 from app.vision.shelf_monitor import ShelfSlot, ShelfVoidDetector
 from app.vision.stream import FrameSource
 from app.vision.tracker import build_tracker
@@ -79,6 +85,22 @@ def build_shelf_detector(cam_config, shelf_cfg):
     return ShelfVoidDetector(slots, shelf_cfg)
 
 
+def build_homography_source(cam_config):
+    """Returns (static_homography, aruco_calibrator) -- exactly one of the
+    two is non-None, or both are None if this camera has no `calibration`
+    block configured. Static calibration is a fixed pixel<->cm mapping typed
+    once; ArUco calibration is re-resolved every shelf-evaluation tick so a
+    bumped camera "auto-heals" instead of silently reporting wrong cm gaps."""
+    calibration = cam_config.get("calibration")
+    if not calibration:
+        return None, None
+    mode = calibration.get("mode", "static")
+    if mode == "aruco":
+        markers = {int(k): tuple(v) for k, v in calibration["markers"].items()}
+        return None, ArucoHomographyCalibrator(markers)
+    return PlanarHomography(calibration["pixel_points"], calibration["metric_points_cm"]), None
+
+
 def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
     source = cam_config.get("source", 0)
     override = getattr(args, f"{cam_name.replace('_cam', '')}_source", None)
@@ -95,9 +117,16 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
     footfall_counters = build_footfall_counters(cam_config, CONFIG.footfall)
     queue_monitors = build_queue_monitors(cam_config, CONFIG.queue)
     shelf_detector = build_shelf_detector(cam_config, CONFIG.shelf)
+    static_homography, aruco_calibrator = build_homography_source(cam_config)
+    label_reader = LabelReader() if (args.show and args.ocr and shelf_detector is not None) else None
+
+    heatmap = None
+    heatmap_enabled = bool(cam_config.get("heatmap"))
+    last_heatmap_publish = 0.0
 
     last_shelf_eval = 0.0
     last_slot_states = []
+    last_ocr_labels = {}
     last_queue_write = {}
     surge_alerted_until = 0.0
 
@@ -108,6 +137,20 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
             break
 
         tracks = tracker.update(frame)
+
+        if heatmap_enabled:
+            if heatmap is None:
+                h, w = frame.shape[:2]
+                heatmap = HeatmapAccumulator(width=w, height=h)
+            heatmap.update(tracks)
+            now_hm = time.time()
+            if now_hm - last_heatmap_publish >= 2.0:
+                last_heatmap_publish = now_hm
+                LIVE_STATE.update_heatmap(
+                    cam_name,
+                    heatmap.render_png_bytes("traffic"),
+                    heatmap.render_png_bytes("dwell"),
+                )
 
         for counter in footfall_counters:
             events = counter.update(tracks)
@@ -136,6 +179,11 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
                 "estimated_wait_seconds": state.estimated_wait_seconds,
                 "alert_triggered": state.alert_triggered,
                 "threshold": CONFIG.queue.threshold,
+                "arrival_rate_per_minute": state.arrival_rate_per_minute,
+                "service_rate_per_minute": state.service_rate_per_minute,
+                "congestion_index": state.congestion_index,
+                "predicted_queue_depth": state.predicted_queue_depth,
+                "recommendation": state.recommendation,
             })
 
             now = time.time()
@@ -156,13 +204,60 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
                 ))
             monitor._was_alerting = state.alert_triggered
 
+            # Congestion Index forecast: fire only on a recommendation-tier transition
+            # so a sustained state doesn't spam the same alert every frame.
+            last_recommendation = getattr(monitor, "_last_recommendation", None)
+            if state.recommendation != last_recommendation:
+                if state.recommendation == RECOMMENDATION_CRITICAL:
+                    dispatcher.dispatch(AlertEvent(
+                        event_type="QUEUE_CONGESTION_FORECAST",
+                        priority=PRIORITY_P1,
+                        message=f"{state.lane_id}: congestion index {state.congestion_index:.2f}, "
+                                f"predicted depth {state.predicted_queue_depth:.1f} within "
+                                f"{int(CONFIG.queue.forecast_horizon_seconds / 60)} min -- open additional lanes now.",
+                        payload={"camera": cam_name, "lane_id": state.lane_id,
+                                 "congestion_index": state.congestion_index,
+                                 "predicted_queue_depth": state.predicted_queue_depth,
+                                 "arrival_rate_per_minute": state.arrival_rate_per_minute},
+                    ))
+                elif state.recommendation == RECOMMENDATION_WARNING:
+                    dispatcher.dispatch(AlertEvent(
+                        event_type="QUEUE_CONGESTION_WARNING",
+                        priority=PRIORITY_P2,
+                        message=f"{state.lane_id}: approaching capacity (CI={state.congestion_index:.2f}) "
+                                f"within {int(CONFIG.queue.forecast_horizon_seconds / 60)} min.",
+                        payload={"camera": cam_name, "lane_id": state.lane_id,
+                                 "congestion_index": state.congestion_index},
+                    ))
+                elif state.recommendation == RECOMMENDATION_IDLE:
+                    dispatcher.dispatch(AlertEvent(
+                        event_type="QUEUE_EXCESS_CAPACITY",
+                        priority=PRIORITY_P4,
+                        message=f"{state.lane_id}: sustained low demand (CI={state.congestion_index:.2f}) "
+                                f"-- consider closing this lane and reallocating staff.",
+                        payload={"camera": cam_name, "lane_id": state.lane_id,
+                                 "congestion_index": state.congestion_index},
+                    ))
+                monitor._last_recommendation = state.recommendation
+
         if shelf_detector is not None:
             now = time.time()
             if now - last_shelf_eval >= CONFIG.shelf.evaluation_interval_seconds:
                 last_shelf_eval = now
                 person_bboxes = [t.bbox for t in tracks]
-                slot_states = shelf_detector.evaluate(frame, person_bboxes)
+
+                current_homography = static_homography
+                if aruco_calibrator is not None:
+                    current_homography = aruco_calibrator.try_recalibrate(frame)
+
+                slot_states = shelf_detector.evaluate(frame, person_bboxes, homography=current_homography)
                 last_slot_states = slot_states
+
+                if label_reader is not None:
+                    last_ocr_labels = {
+                        s.slot.slot_id: label_reader.read(frame, s.slot.rect) for s in slot_states
+                    }
+
                 for state in slot_states:
                     LIVE_STATE.update_shelf_slot(state.slot.slot_id, {
                         "slot_id": state.slot.slot_id,
@@ -171,6 +266,7 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
                         "shelf_tier": state.slot.shelf_tier,
                         "void_ratio": state.void_ratio,
                         "fill_ratio": state.fill_ratio,
+                        "gap_cm": state.gap_cm,
                         "low_stock_warning": state.low_stock_warning,
                         "out_of_stock_alert": state.out_of_stock_alert,
                         "occluded": state.occluded,
@@ -208,6 +304,14 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
             draw_polygons(display, [m.polygon for m in queue_monitors])
             if shelf_detector is not None:
                 draw_shelf_slots(display, last_slot_states)
+                if label_reader is not None:
+                    for state in last_slot_states:
+                        reading = last_ocr_labels.get(state.slot.slot_id)
+                        if reading is None:
+                            continue
+                        x, y, w, h = state.slot.rect
+                        cv2.putText(display, f"OCR {reading.confidence:.2f}: {reading.text[:24]}",
+                                    (x, y + h + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
             draw_tracks(display, tracks)
             cv2.imshow(cam_name, display)
             if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -230,6 +334,8 @@ def build_argparser():
     parser.add_argument("--shelf-source", default=None, help="Override shelf_cam source")
     parser.add_argument("--loop", action="store_true", help="Loop demo video files at EOF instead of stopping")
     parser.add_argument("--show", action="store_true", help="Open local debug overlay window(s)")
+    parser.add_argument("--ocr", action="store_true",
+                         help="Overlay shelf-tag OCR text in --show mode (needs pytesseract + Tesseract binary)")
     parser.add_argument("--no-server", action="store_true", help="Run the vision pipeline only; skip the API/dashboard")
     parser.add_argument("--host", default=CONFIG.api_host)
     parser.add_argument("--port", type=int, default=CONFIG.api_port)

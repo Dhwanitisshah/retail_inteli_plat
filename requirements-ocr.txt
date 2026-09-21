@@ -1,0 +1,6 @@
+-r requirements.txt
+pytesseract>=0.3,<1
+# Also requires the Tesseract OCR binary itself, which is NOT a pip package:
+#   Windows: https://github.com/UB-Mannheim/tesseract/wiki (add install dir to PATH)
+#   Debian/Ubuntu: sudo apt-get install tesseract-ocr
+#   macOS: brew install tesseract

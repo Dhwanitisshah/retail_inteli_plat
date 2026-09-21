@@ -1,13 +1,19 @@
-# Edge Retail Intelligence Platform (MVP)
+# SAMGRAHA — Edge Retail Intelligence Platform
 
-A working implementation of the MVP slice from the platform spec: **entrance
-footfall tracking** + **checkout queue alerting**, plus a class-agnostic
-**shelf void detector**, running entirely on-device with zero PII, an
-embedded SQLite store, and a live FastAPI + WebSocket dashboard.
+**Team AUREX · Smart India Hackathon 2026 · Problem Statement 26179 (Hardware / Miscellaneous)**
+
+An edge-native computer vision platform that runs entirely on in-store
+hardware: **entrance footfall tracking**, **checkout queue alerting with a
+predictive Congestion Index**, and **class-agnostic shelf void detection**
+with metric (cm) gap measurement -- all with zero PII, an embedded SQLite
+store, and a live FastAPI + WebSocket dashboard.
 
 It runs on a laptop out of the box (no GPU, no ML weights) using a
 lightweight OpenCV motion-blob tracker, with a pluggable real YOLOv8n +
-ByteTrack backend for production edge hardware.
+ByteTrack backend for production edge hardware. See
+[HARDWARE.md](HARDWARE.md) for the physical deployment plan (cameras, edge
+compute tiers, network topology, UPS/power) -- this repo is the software
+that runs on it.
 
 ## Architecture at a glance
 
@@ -17,18 +23,20 @@ FrameSource (webcam / video file / RTSP)
         ▼
 PersonTracker  ── MotionBlobTracker (default) or YoloByteTrackTracker (--detector yolo)
         │  (ephemeral track_id + ground-contact centroid only -- no Re-ID, no faces)
-        ├──► FootfallCounter   -- tripwire crossing (Section 3.1)
-        ├──► QueueMonitor      -- dwell-time + confirmation-window alerting (Section 3.2/4.1)
-        └──► ShelfVoidDetector -- per-slot void/fill ratio, occlusion-gated (Section 3.3)
-                │
-                ▼
+        ├──► FootfallCounter   -- tripwire crossing + surge-rate detection
+        ├──► HeatmapAccumulator -- traffic/dwell 2D Gaussian floor heatmap
+        ├──► QueueMonitor      -- dwell-threshold alert + Congestion Index forecast (CI = λ/(c·μ))
+        └──► ShelfVoidDetector -- per-slot void/fill ratio, occlusion-gated, metric gap (cm)
+                │                        ▲
+                │              PlanarHomography / ArucoHomographyCalibrator
+                ▼                (pixel -> cm, auto-heals against camera drift)
         SQLite (footfall_events / queue_telemetry / shelf_compliance_events)
                 │
                 ▼
         AlertDispatcher ──► console log, Telegram bot, generic webhook, dashboard WebSocket
                 │
                 ▼
-        FastAPI + static dashboard (REST + /ws/live)
+        FastAPI + static dashboard (REST + /ws/live + /api/heatmap/*.png)
 ```
 
 Each named camera in `sample_config/store_layout.json` runs its own
@@ -53,7 +61,9 @@ Then open **http://localhost:8000** for the live dashboard.
 
 To use a real webcam instead: `python main.py --only entrance_cam
 --entrance-source 0 --show` (`--show` opens a local OpenCV overlay window
-with the tripwire/ROI/track drawings for debugging).
+with the tripwire/ROI/track drawings for debugging; add `--ocr` to also
+overlay shelf-tag OCR text, if you've installed
+`requirements-ocr.txt` + the Tesseract binary).
 
 Run all three camera pipelines at once only if you have three separate
 video sources (three files, or three distinct cameras) -- most OS camera
@@ -72,44 +82,78 @@ python main.py \
 python tests/test_pipeline_smoke.py
 ```
 
-Runs the tripwire crossing, queue debounce state machine, shelf void
-detection + occlusion gating, SQLite persistence, and alert fan-out against
-synthetic data with zeroed timing thresholds -- no camera, no wall-clock
-waiting.
+12 tests covering: tripwire crossing, the queue dwell/confirmation state
+machine, the Congestion Index formula and its recommendation tiers, planar
+homography pixel→cm projection, shelf void detection + occlusion gating +
+metric gap measurement, the heatmap accumulator, OCR's graceful fallback,
+SQLite persistence, and alert fan-out -- all against synthetic data with
+zeroed timing thresholds, no camera or wall-clock waiting required.
 
 ## What's spec-accurate vs. a stand-in
 
-| Component | This implementation | Spec's production target |
+| Component | This implementation | Production target |
 |---|---|---|
-| Tripwire footfall counting | Exact vector-crossing math from Section 3.1 | Same |
-| Queue dwell/threshold/confirmation logic | Exact state machine from Section 4.1's pseudocode | Same |
-| Wait time estimate | Spec's `(people * avg_service_time) / active_cashiers` formula | Same |
-| Person detection/tracking | `MotionBlobTracker` (background subtraction, default) **or** `YoloByteTrackTracker` (`--detector yolo`, needs `pip install -r requirements-yolo.txt`) | YOLOv8n/YOLOv10n + ByteTrack on TensorRT |
-| Shelf void detection | Classical CV heuristic: per-slot Canny edge-density vs. a calibrated "stocked" reference, plus row-activity for vertical fill ratio | Trained YOLOv8-Seg instance segmentation (`product_cluster` / `empty_shelf_void`) |
-| Planogram slot mapping | Slots are pre-calibrated pixel rectangles in `store_layout.json` (no live homography) | Pixel→metric homography + planogram DB lookup |
-| Alert channels | Console log + optional Telegram bot + optional generic webhook + dashboard WebSocket | Zebra handhelds, PA chimes, POS pop-ups |
-| Persistence | SQLite, schema identical to the spec (Section 5.1) | Same |
+| Tripwire footfall counting | Exact vector-crossing math | Same |
+| Queue dwell/threshold/confirmation alert | Exact state machine from the MVP pseudocode | Same |
+| Congestion Index forecast | `CI = λ/(c·μ)` computed from *observed* arrival rate; recommendation tiers (optimal/warning/critical/idle) match the spec's thresholds | Spec's full version feed-forwards λ from upstream "final-stage" zone dwell, which needs extra camera coverage not in this layout |
+| Wait time estimate | `(people * avg_service_time) / active_cashiers` | Same |
+| Person detection/tracking | `MotionBlobTracker` (background subtraction, default) **or** `YoloByteTrackTracker` (`--detector yolo`, needs `pip install -r requirements-yolo.txt`) | YOLOv8n/v10n + ByteTrack on TensorRT |
+| Shelf void detection | Classical CV heuristic: per-slot Canny edge-density vs. a calibrated "stocked" reference, plus row/column activity for fill ratio and gap extent | Trained YOLOv8-Seg instance segmentation (`product_cluster` / `empty_shelf_void`) |
+| Metric shelf gap (cm) | `PlanarHomography` (static 4-point calibration) or `ArucoHomographyCalibrator` (auto-heals from 4 ArUco markers every eval tick) | Same `x' = Hx` planar projective geometry |
+| Movement heatmaps | `HeatmapAccumulator`: decaying 2D Gaussian splat grid, traffic + dwell layers, served as PNG | Same, published as periodic normalized matrices |
+| Shelf-tag OCR | Optional (`--ocr`, needs `pytesseract` + Tesseract binary); pure demo overlay, never load-bearing for alerting | Not actually in the spec's alerting logic either -- SKU identity comes from the planogram slot, not the printed tag |
+| Alert channels | Console log + optional Telegram bot + optional generic webhook + dashboard WebSocket | Zebra handhelds, PA chimes, POS pop-ups (see HARDWARE.md) |
+| Persistence | SQLite, WAL mode (survives a hard power cut mid-write) | Same, backed by a UPS for graceful shutdown |
 | Edge-to-cloud sync | Not implemented (single-store, local-only) | Store-and-forward batched JSON over MQTT/HTTPS |
+| Thermal/UPS monitoring, PoE, rack hardware | Not implementable without physical hardware -- see [HARDWARE.md](HARDWARE.md) | Real sensors/hardware |
 
 The shelf detector's contract (`ShelfSlot` in, `ShelfSlotState` out with
-`void_ratio`/`fill_ratio`/`out_of_stock_alert`) is intentionally identical to
-what a real segmentation model would need to produce, so swapping in a
-trained YOLOv8-Seg model later only touches `app/vision/shelf_monitor.py`.
+`void_ratio`/`fill_ratio`/`gap_cm`/`out_of_stock_alert`) is intentionally
+identical to what a real segmentation model would need to produce, so
+swapping in a trained YOLOv8-Seg model later only touches
+`app/vision/shelf_monitor.py`.
 
 ## Configuration
 
-Thresholds live in `config.py` and mirror the spec's numbers exactly
-(`QUEUE_THRESHOLD=4`, `DWELL_TIME_SECONDS=60`, `CONFIRMATION_WINDOW=120`,
-`void_ratio_alert=0.65`, `fill_ratio_warn=0.30`). Override via environment
-variables (`STORE_ID`, `TRACKER_BACKEND`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`, `ALERT_WEBHOOK_URL`, etc. -- see `config.py`) or edit the
-dataclass defaults directly.
+Thresholds live in `config.py`:
 
-Camera geometry (tripwires, queue ROI polygons, shelf slot rectangles) lives
-in `sample_config/store_layout.json`. Coordinates are pixel coordinates in
-that camera's frame; recalibrate them for your own camera placement by
-drawing over a captured frame (`--show` overlays the currently configured
-geometry so you can iterate).
+- Queue: `threshold=4`, `dwell_time_seconds=60`, `confirmation_window=120`,
+  plus the Congestion Index engine's `ci_warning_threshold=0.70`,
+  `ci_critical_threshold=1.00`, `ci_idle_threshold=0.35`,
+  `ci_idle_sustained_seconds=600`, `arrival_window_seconds=300`,
+  `forecast_horizon_seconds=300`.
+- Shelf: `void_ratio_alert=0.65`, `fill_ratio_warn=0.30`,
+  `consecutive_frames_required=3`, `evaluation_interval_seconds=5.0`.
+
+Override via environment variables (`STORE_ID`, `TRACKER_BACKEND`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `ALERT_WEBHOOK_URL`, etc. -- see
+`config.py`) or edit the dataclass defaults directly.
+
+Camera geometry lives in `sample_config/store_layout.json`: tripwires,
+queue ROI polygons, shelf slot rectangles, an optional `"heatmap": true`
+flag per camera, and an optional `"calibration"` block for metric shelf
+gaps:
+
+```json
+"calibration": {
+  "mode": "static",
+  "pixel_points": [[0, 100], [630, 100], [630, 250], [0, 250]],
+  "metric_points_cm": [[0, 0], [180, 0], [180, 45], [0, 45]]
+}
+```
+
+or, to auto-heal against camera drift instead of trusting a one-time static
+calibration (see HARDWARE.md):
+
+```json
+"calibration": {
+  "mode": "aruco",
+  "markers": { "0": [0, 0], "1": [180, 0], "2": [180, 45], "3": [0, 45] }
+}
+```
+
+`--show` overlays the currently configured geometry (tripwires, ROIs, shelf
+slots with live void_ratio/gap_cm) so you can iterate on calibration.
 
 ## Project structure
 
@@ -117,22 +161,26 @@ geometry so you can iterate).
 edge-retail-ai/
 ├── main.py                     # orchestrator: wires cameras -> pipeline -> db/alerts/dashboard
 ├── config.py                   # thresholds + runtime settings (dataclasses)
+├── HARDWARE.md                 # physical deployment reference (cameras, edge tiers, network, UPS)
 ├── app/
 │   ├── geometry.py              # Tripwire crossing math, Polygon point-in-polygon
-│   ├── database.py              # SQLite schema + queries (matches spec Section 5.1)
+│   ├── database.py              # SQLite (WAL) schema + queries
 │   ├── state.py                 # thread-safe live snapshot shared with the API layer
 │   ├── vision/
 │   │   ├── stream.py             # webcam/file/RTSP frame source
 │   │   ├── tracker.py            # MotionBlobTracker + YoloByteTrackTracker
 │   │   ├── footfall.py           # tripwire IN/OUT counting + surge-rate calc
-│   │   ├── queue_monitor.py      # dwell-time + confirmation-window alerting
-│   │   ├── shelf_monitor.py      # void/fill ratio + human-occlusion gating
+│   │   ├── queue_monitor.py      # dwell-threshold alert + Congestion Index forecast engine
+│   │   ├── shelf_monitor.py      # void/fill ratio, occlusion gating, metric gap via homography
+│   │   ├── homography.py         # PlanarHomography + ArucoHomographyCalibrator (x' = Hx)
+│   │   ├── heatmap.py            # decaying 2D Gaussian traffic/dwell accumulator
+│   │   ├── ocr.py                # optional pytesseract shelf-tag reader (graceful no-op fallback)
 │   │   └── overlay.py            # --show debug drawing helpers
 │   ├── alerts/dispatcher.py     # in-process pub/sub + Telegram/webhook fan-out
 │   └── server/
-│       ├── api.py                # FastAPI REST + WebSocket
+│       ├── api.py                # FastAPI REST + WebSocket + heatmap PNG endpoint
 │       └── static/dashboard.html # single-page live dashboard
-├── sample_config/store_layout.json  # camera/tripwire/ROI/shelf-slot geometry
+├── sample_config/store_layout.json  # camera/tripwire/ROI/shelf-slot/calibration geometry
 ├── scripts/generate_demo_clips.py   # synthetic demo videos, no camera needed
 └── tests/test_pipeline_smoke.py     # end-to-end logic tests, no pytest required
 ```
@@ -147,5 +195,11 @@ edge-retail-ai/
   first sees, so point the shelf camera at a genuinely fully-stocked shelf
   before starting a session (or call `ShelfVoidDetector.calibrate()`
   explicitly with a known-good reference frame).
+- The Congestion Index's λ_predicted is the *observed* arrival rate, not a
+  feed-forward estimate from upstream store zones (that needs additional
+  camera coverage this layout doesn't have).
 - Single-store, local-only: there's no store-and-forward sync to a central
-  cloud warehouse yet (Section 8 of the spec).
+  cloud warehouse yet.
+- OCR, thermal/UPS monitoring, and the associate-handheld/PA-chime alert
+  channels are either optional/best-effort or entirely out of scope without
+  physical hardware -- see [HARDWARE.md](HARDWARE.md).

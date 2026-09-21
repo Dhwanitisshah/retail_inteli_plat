@@ -48,6 +48,7 @@ class ShelfSlotState:
     out_of_stock_alert: bool
     consecutive_alert_frames: int
     occluded: bool = False
+    gap_cm: float = None  # metric void width, only set when a homography is available
 
 
 def _bbox_overlap_ratio(rect: Tuple[int, int, int, int], bbox: Tuple[int, int, int, int]) -> float:
@@ -62,10 +63,12 @@ def _bbox_overlap_ratio(rect: Tuple[int, int, int, int], bbox: Tuple[int, int, i
 
 
 class ShelfVoidDetector:
-    def __init__(self, slots: List[ShelfSlot], config: ShelfConfig, occlusion_threshold: float = 0.25):
+    def __init__(self, slots: List[ShelfSlot], config: ShelfConfig, occlusion_threshold: float = 0.25,
+                 homography=None):
         self.slots = slots
         self.config = config
         self.occlusion_threshold = occlusion_threshold
+        self.homography = homography  # optional PlanarHomography for gap_cm (Section: Planogram Mapping)
         self._reference_edge_density: Dict[str, float] = {}
         self._consecutive_over_threshold: Dict[str, int] = {s.slot_id: 0 for s in slots}
         self._last_state: Dict[str, ShelfSlotState] = {}
@@ -104,10 +107,33 @@ class ShelfVoidDetector:
         stack_height = active_rows[-1] - active_rows[0] + 1
         return min(1.0, float(stack_height) / h)
 
-    def evaluate(self, frame, person_bboxes: List[Tuple[int, int, int, int]] = None) -> List[ShelfSlotState]:
+    @staticmethod
+    def _void_pixel_extent(frame, rect):
+        """Rough horizontal pixel extent (abs_x_start, abs_x_end) of the
+        empty region within a slot, using per-column edge activity as a
+        product/no-product signal. Returns None if the slot reads as fully
+        stocked (no low-activity column run found)."""
+        x, y, w, h = rect
+        crop = frame[y:y + h, x:x + w]
+        if crop.size == 0:
+            return None
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+        col_activity = edges.sum(axis=0).astype(np.float32)
+        peak = col_activity.max()
+        if peak <= 0:
+            return (x, x + w)  # entirely featureless -> whole slot reads as void
+        quiet_cols = np.where(col_activity < peak * 0.1)[0]
+        if len(quiet_cols) == 0:
+            return None
+        return (x + int(quiet_cols[0]), x + int(quiet_cols[-1]) + 1)
+
+    def evaluate(self, frame, person_bboxes: List[Tuple[int, int, int, int]] = None,
+                 homography=None) -> List[ShelfSlotState]:
         if not self._calibrated:
             self.calibrate(frame)
         person_bboxes = person_bboxes or []
+        homography = homography or self.homography
 
         results = []
         for slot in self.slots:
@@ -122,7 +148,7 @@ class ShelfVoidDetector:
                     low_stock_warning=cached.low_stock_warning,
                     out_of_stock_alert=cached.out_of_stock_alert,
                     consecutive_alert_frames=cached.consecutive_alert_frames,
-                    occluded=True,
+                    occluded=True, gap_cm=cached.gap_cm,
                 ))
                 continue
 
@@ -136,6 +162,13 @@ class ShelfVoidDetector:
             else:
                 self._consecutive_over_threshold[slot.slot_id] = 0
 
+            gap_cm = None
+            if homography is not None and void_ratio > self.config.fill_ratio_warn:
+                extent = self._void_pixel_extent(frame, slot.rect)
+                if extent is not None:
+                    mid_y = slot.rect[1] + slot.rect[3] // 2
+                    gap_cm = homography.project_distance_cm((extent[0], mid_y), (extent[1], mid_y))
+
             consecutive = self._consecutive_over_threshold[slot.slot_id]
             state = ShelfSlotState(
                 slot=slot,
@@ -145,6 +178,7 @@ class ShelfVoidDetector:
                 out_of_stock_alert=consecutive >= self.config.consecutive_frames_required,
                 consecutive_alert_frames=consecutive,
                 occluded=False,
+                gap_cm=gap_cm,
             )
             self._last_state[slot.slot_id] = state
             results.append(state)

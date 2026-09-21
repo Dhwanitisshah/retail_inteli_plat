@@ -69,20 +69,26 @@
     </div>
   </section>
 
-  <section>
-    <h2>Checkout Queues</h2>
+  <section style="grid-column: 1 / -1;">
+    <h2>Checkout Queues — Congestion Forecast</h2>
     <table id="queue-table">
-      <thead><tr><th>Lane</th><th>People</th><th>Qualifying</th><th>Est. Wait</th><th>Status</th></tr></thead>
-      <tbody><tr><td colspan="5" class="empty">No queue telemetry yet.</td></tr></tbody>
+      <thead><tr><th>Lane</th><th>People</th><th>Qualifying</th><th>Est. Wait</th><th>Arrival λ/min</th><th>Congestion Index</th><th>Predicted Depth</th><th>Recommendation</th></tr></thead>
+      <tbody><tr><td colspan="8" class="empty">No queue telemetry yet.</td></tr></tbody>
     </table>
   </section>
 
   <section>
     <h2>Shelf Compliance</h2>
     <table id="shelf-table">
-      <thead><tr><th>Slot</th><th>SKU</th><th>Void Ratio</th><th>Fill Ratio</th><th>Status</th></tr></thead>
-      <tbody><tr><td colspan="5" class="empty">No shelf telemetry yet.</td></tr></tbody>
+      <thead><tr><th>Slot</th><th>SKU</th><th>Void Ratio</th><th>Fill Ratio</th><th>Gap (cm)</th><th>Status</th></tr></thead>
+      <tbody><tr><td colspan="6" class="empty">No shelf telemetry yet.</td></tr></tbody>
     </table>
+  </section>
+
+  <section>
+    <h2>Store Heatmap</h2>
+    <div id="heatmap-controls" class="empty">No heatmap-enabled camera yet.</div>
+    <img id="heatmap-img" style="display:none; width:100%; border-radius:8px; margin-top:8px;" />
   </section>
 
   <section style="grid-column: 1 / -1;">
@@ -108,32 +114,64 @@
     document.getElementById('ff-out').textContent = data.footfall.total_out;
     document.getElementById('ff-inside').textContent = data.footfall.inside_count;
 
+    const recommendationBadge = {
+      critical_open_lanes: '<span class="badge crit">OPEN LANE NOW</span>',
+      warning: '<span class="badge warn">APPROACHING CAPACITY</span>',
+      idle_close_lane: '<span class="badge warn">CONSIDER CLOSING</span>',
+      optimal: '<span class="badge ok">OPTIMAL</span>',
+    };
+
     const queues = Object.values(data.queues || {});
     const qBody = document.querySelector('#queue-table tbody');
     if (queues.length === 0) {
-      qBody.innerHTML = '<tr><td colspan="5" class="empty">No queue telemetry yet.</td></tr>';
+      qBody.innerHTML = '<tr><td colspan="8" class="empty">No queue telemetry yet.</td></tr>';
     } else {
       qBody.innerHTML = queues.map(q => {
         const status = q.alert_triggered
           ? '<span class="badge crit">SURGE</span>'
           : (q.qualifying_shoppers >= (q.threshold || 4) ? '<span class="badge warn">BUILDING</span>' : '<span class="badge ok">NORMAL</span>');
-        return `<tr><td>${q.lane_id}</td><td>${q.people_count}</td><td>${q.qualifying_shoppers}</td><td>${fmtSeconds(q.estimated_wait_seconds)}</td><td>${status}</td></tr>`;
+        const rec = recommendationBadge[q.recommendation] || '—';
+        const ci = (q.congestion_index !== undefined) ? q.congestion_index.toFixed(2) : '—';
+        const lam = (q.arrival_rate_per_minute !== undefined) ? q.arrival_rate_per_minute.toFixed(1) : '—';
+        const predicted = (q.predicted_queue_depth !== undefined) ? q.predicted_queue_depth.toFixed(1) : '—';
+        return `<tr><td>${q.lane_id}</td><td>${q.people_count}</td><td>${q.qualifying_shoppers} ${status}</td>` +
+               `<td>${fmtSeconds(q.estimated_wait_seconds)}</td><td>${lam}</td><td>${ci}</td><td>${predicted}</td><td>${rec}</td></tr>`;
       }).join('');
     }
 
     const slots = Object.values(data.shelf_slots || {});
     const sBody = document.querySelector('#shelf-table tbody');
     if (slots.length === 0) {
-      sBody.innerHTML = '<tr><td colspan="5" class="empty">No shelf telemetry yet.</td></tr>';
+      sBody.innerHTML = '<tr><td colspan="6" class="empty">No shelf telemetry yet.</td></tr>';
     } else {
       sBody.innerHTML = slots.map(s => {
         let status = '<span class="badge ok">OK</span>';
         if (s.out_of_stock_alert) status = '<span class="badge crit">OUT OF STOCK</span>';
         else if (s.low_stock_warning) status = '<span class="badge warn">LOW STOCK</span>';
-        return `<tr><td>${s.slot_id}</td><td>${s.sku_id}</td><td>${(s.void_ratio*100).toFixed(0)}%</td><td>${(s.fill_ratio*100).toFixed(0)}%</td><td>${status}</td></tr>`;
+        const gap = (s.gap_cm !== undefined && s.gap_cm !== null) ? s.gap_cm.toFixed(0) + ' cm' : '—';
+        return `<tr><td>${s.slot_id}</td><td>${s.sku_id}</td><td>${(s.void_ratio*100).toFixed(0)}%</td><td>${(s.fill_ratio*100).toFixed(0)}%</td><td>${gap}</td><td>${status}</td></tr>`;
       }).join('');
     }
+
+    updateHeatmapPanel(data.heatmap_cameras || []);
   }
+
+  let heatmapCamera = null;
+  function updateHeatmapPanel(cameras) {
+    const controls = document.getElementById('heatmap-controls');
+    const img = document.getElementById('heatmap-img');
+    if (cameras.length === 0) {
+      controls.textContent = 'No heatmap-enabled camera yet.';
+      controls.style.display = 'block';
+      img.style.display = 'none';
+      return;
+    }
+    if (!heatmapCamera || !cameras.includes(heatmapCamera)) heatmapCamera = cameras[0];
+    controls.style.display = 'none';
+    img.style.display = 'block';
+    img.src = `/api/heatmap/${heatmapCamera}/traffic.png?t=${Date.now()}`;
+  }
+  setInterval(() => { if (heatmapCamera) updateHeatmapPanel([heatmapCamera]); }, 3000);
 
   function renderAlert(evt) {
     if (alertCount === 0) alertFeed.innerHTML = '';
