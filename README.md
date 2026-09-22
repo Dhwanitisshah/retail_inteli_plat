@@ -2,10 +2,12 @@
 
 **Team AUREX · Smart India Hackathon 2026 · Problem Statement 26179 (Hardware / Miscellaneous)**
 
-📺 **[Illustrated walkthrough (live demo page)](https://claude.ai/artifact/FRPQemet67X3Tigs88vQ6J)** — all 5
-pipeline modules paired with real store/checkout/backroom photos, including
-a heatmap that's genuine code output, not a mockup. *(Private Claude
-artifact link — open it and use its Share menu if it asks for access.)*
+📺 **[Illustrated walkthrough](demo.html)** ([rendered preview](https://raw.githack.com/Dhwanitisshah/retail_inteli_plat/main/demo.html)) —
+all 5 pipeline modules paired with real store/checkout/backroom photos,
+including a heatmap that's genuine code output, not a mockup. Self-contained
+in this repo (`demo.html` + `assets/`) — clone and open in a browser, or use
+the rendered-preview link (third-party GitHub-HTML proxy, raw.githack.com).
+Also hosted as a [Claude artifact](https://claude.ai/artifact/FRPQemet67X3Tigs88vQ6J) (private by default).
 
 An edge-native computer vision platform that runs entirely on in-store
 hardware: **entrance footfall tracking**, **checkout queue alerting with a

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="SAMGRAHA (Team AUREX, SIH 2026 PS 26179): an illustrated walkthrough of all five edge-AI retail pipeline modules, paired with real store photos.">
+<title>SAMGRAHA Walkthrough</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #f3f6f5; --surface: #ffffff; --surface-2: #edf2f1; --surface-3: #e4ebe9;
+    --ink: #10161a; --ink-2: #445250; --ink-3: #77857f; --line: #d9e2df;
+    --accent: #0e8f81; --accent-ink: #ffffff; --accent-dim: #d9f0ec;
+    --warn: #a15f0a; --warn-dim: #f7ebd8; --crit: #b23429; --crit-dim: #f7dfdb; --ok: #1f7a49; --ok-dim: #ddf0e3;
+    --shadow: 0 1px 2px rgba(16,22,26,.06), 0 8px 24px -12px rgba(16,22,26,.18);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0e0d; --surface: #12191a; --surface-2: #182021; --surface-3: #1d2627;
+      --ink: #e7ece9; --ink-2: #9aa9a5; --ink-3: #64726e; --line: #223030;
+      --accent: #2cd4bf; --accent-ink: #06201c; --accent-dim: #10302c;
+      --warn: #e8ae5e; --warn-dim: #35280f; --crit: #ea6b60; --crit-dim: #3a1e1b; --ok: #6dc28b; --ok-dim: #152e1d;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -14px rgba(0,0,0,.6);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0e0d; --surface: #12191a; --surface-2: #182021; --surface-3: #1d2627;
+    --ink: #e7ece9; --ink-2: #9aa9a5; --ink-3: #64726e; --line: #223030;
+    --accent: #2cd4bf; --accent-ink: #06201c; --accent-dim: #10302c;
+    --warn: #e8ae5e; --warn-dim: #35280f; --crit: #ea6b60; --crit-dim: #3a1e1b; --ok: #6dc28b; --ok-dim: #152e1d;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -14px rgba(0,0,0,.6);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", -apple-system, Segoe UI, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding-inline: 20px;
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  main { max-width: 860px; margin: 0 auto; }
+  h1, h2, h3 { font-family: "IBM Plex Sans", sans-serif; font-weight: 600; text-wrap: balance; margin: 0; }
+  p { margin: 0; line-height: 1.6; }
+  a { color: var(--accent); }
+  ::selection { background: var(--accent); color: var(--accent-ink); }
+
+  /* ---------- top status strip ---------- */
+  .status-strip {
+    display: flex; align-items: center; gap: 10px; padding-block: 14px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--ink-3);
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+  .rec-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--crit); flex: none; animation: pulse 2s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .rec-dot { animation: none; } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .status-strip .sep { color: var(--line); }
+  .status-strip .push { margin-left: auto; }
+
+  /* ---------- hero ---------- */
+  .hero { padding-block: 8px 44px; display: flex; flex-direction: column; gap: 16px; }
+  .kicker {
+    display: inline-flex; align-self: flex-start; align-items: center; gap: 8px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-dim); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    padding: 5px 10px 5px 8px; border-radius: 3px;
+  }
+  .hero h1 { font-size: clamp(34px, 6vw, 52px); letter-spacing: -.01em; line-height: 1.04; }
+  .hero .sub { font-size: 17px; color: var(--ink-2); max-width: 56ch; line-height: 1.55; }
+  .hero-meta { display: flex; flex-wrap: wrap; gap: 8px 10px; margin-top: 4px; }
+  .pill {
+    font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--ink-2);
+    border: 1px solid var(--line); background: var(--surface); padding: 5px 10px; border-radius: 3px;
+  }
+  .pill b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- pipeline nav rail (visual only, mirrors module order) ---------- */
+  .rail { display: flex; gap: 6px; padding-block: 4px 40px; overflow-x: auto; }
+  .rail a {
+    flex: none; font-family: "IBM Plex Mono", monospace; font-size: 11px; text-decoration: none;
+    color: var(--ink-3); border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px;
+    transition: color .15s, border-color .15s;
+  }
+  .rail a:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ---------- module section ---------- */
+  .module { padding-block: 40px; border-top: 1px solid var(--line); scroll-margin-top: 20px; }
+  .module:first-of-type { border-top: none; }
+  .module-head { display: flex; flex-direction: column; gap: 8px; max-width: 62ch; margin-bottom: 26px; }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--accent);
+    display: flex; align-items: baseline; gap: 10px; letter-spacing: .02em;
+  }
+  .eyebrow .num { color: var(--ink-3); }
+  .module h2 { font-size: 26px; letter-spacing: -.005em; }
+  .module .lede { color: var(--ink-2); font-size: 15px; }
+  .module .detail { color: var(--ink-2); font-size: 14.5px; margin-top: 14px; max-width: 62ch; }
+  .module .detail code { font-family: "IBM Plex Mono", monospace; font-size: .92em; background: var(--surface-2); padding: 1px 5px; border-radius: 2px; color: var(--ink); }
+  .formula {
+    font-family: "IBM Plex Mono", monospace; font-size: 13.5px; color: var(--ink);
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px;
+    padding: 10px 14px; margin-top: 14px; display: inline-block;
+  }
+
+  /* ---------- camera-feed framed photo ---------- */
+  .feed { margin: 0; }
+  .feed-frame {
+    position: relative; border-radius: 6px; overflow: hidden; background: #000;
+    box-shadow: var(--shadow); border: 1px solid var(--line);
+  }
+  .feed-frame img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .osd {
+    position: absolute; font-family: "IBM Plex Mono", monospace; font-size: 10.5px;
+    color: #eafaf6; background: rgba(6,14,12,.55); padding: 3px 7px; border-radius: 2px;
+    letter-spacing: .03em; backdrop-filter: blur(2px);
+  }
+  .osd-tl { top: 8px; left: 8px; } .osd-br { bottom: 8px; right: 8px; }
+  .corner { position: absolute; width: 16px; height: 16px; border: 2px solid var(--accent); opacity: .85; }
+  .corner-tl { top: 8px; left: 8px; border-right: none; border-bottom: none; }
+  .corner-tr { top: 8px; right: 8px; border-left: none; border-bottom: none; }
+  .corner-bl { bottom: 8px; left: 8px; border-right: none; border-top: none; }
+  .corner-br { bottom: 8px; right: 8px; border-left: none; border-top: none; }
+  .feed figcaption { font-size: 13px; color: var(--ink-3); margin-top: 8px; max-width: 56ch; }
+
+  /* single hero photo for a module */
+  .feed.solo .feed-frame { aspect-ratio: 4/3; }
+
+  /* 2x2 grid of small feeds */
+  .feed-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .feed-grid .feed-frame { aspect-ratio: 4/3; }
+  .feed-grid .osd, .feed-grid .corner { transform: scale(.85); transform-origin: top left; }
+  .feed-grid .corner-tr { transform-origin: top right; } .feed-grid .corner-bl { transform-origin: bottom left; } .feed-grid .corner-br { transform-origin: bottom right; }
+
+  /* two-up (heatmap before/after) */
+  .feed-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .feed-pair .feed-frame { aspect-ratio: 4/3; }
+
+  /* horizontal scroll strip for multi-photo galleries */
+  .strip { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x proximity; margin: 0 -2px; padding-inline: 2px; }
+  .strip .feed { flex: none; width: 240px; scroll-snap-align: start; }
+  .strip .feed-frame { aspect-ratio: 4/3; }
+  .strip::-webkit-scrollbar { height: 6px; }
+  .strip::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
+  .proof-tag {
+    display: inline-flex; align-items: center; gap: 6px; font-family: "IBM Plex Mono", monospace;
+    font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--ok);
+    background: var(--ok-dim); border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+    padding: 4px 9px; border-radius: 3px; margin-bottom: 10px;
+  }
+  .proof-tag::before { content: "✓"; }
+
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--surface-2); border-radius: 0 5px 5px 0;
+    padding: 12px 16px; font-size: 14px; color: var(--ink-2); margin-top: 16px; max-width: 62ch;
+  }
+  .callout b { color: var(--ink); }
+
+  /* ---------- architecture recap ---------- */
+  .arch { padding-block: 44px; border-top: 1px solid var(--line); }
+  .arch h2 { font-size: 22px; margin-bottom: 16px; }
+  .arch pre {
+    font-family: "IBM Plex Mono", monospace; font-size: 12.2px; line-height: 1.65; color: var(--ink-2);
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px;
+    overflow-x: auto; margin: 0;
+  }
+  .arch pre b { color: var(--accent); font-weight: 600; }
+  .arch pre .tag { color: var(--ink-3); }
+
+  .privacy-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 20px; }
+  .privacy-grid div {
+    border: 1px solid var(--line); background: var(--surface); border-radius: 5px; padding: 12px 14px;
+  }
+  .privacy-grid .k { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ok); text-transform: uppercase; letter-spacing: .04em; }
+  .privacy-grid .v { font-size: 13.5px; color: var(--ink-2); margin-top: 4px; line-height: 1.45; }
+
+  /* ---------- footer ---------- */
+  footer { padding-block: 40px 60px; border-top: 1px solid var(--line); }
+  .run-block {
+    font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink);
+    background: #0a0e0d; color: #d9ece8; border-radius: 6px; padding: 16px 18px; overflow-x: auto;
+    line-height: 1.7; box-shadow: var(--shadow);
+  }
+  .run-block .c { color: #5c9a90; }
+  footer .links { display: flex; flex-wrap: wrap; gap: 14px 22px; margin-top: 20px; font-size: 13.5px; }
+  footer .links a { color: var(--ink-2); text-decoration: none; }
+  footer .links a:hover { color: var(--accent); }
+  footer .fine { font-size: 12px; color: var(--ink-3); margin-top: 28px; max-width: 62ch; }
+
+  @media (max-width: 640px) {
+    .feed-grid, .feed-pair, .privacy-grid { grid-template-columns: 1fr; }
+    .module h2 { font-size: 22px; }
+    .hero h1 { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+
+<main>
+
+  <div class="status-strip">
+    <span class="rec-dot" aria-hidden="true"></span>
+    <span>REC</span>
+    <span class="sep">·</span>
+    <span>EDGE-01 · LOCAL ONLY</span>
+    <span class="sep push">·</span>
+    <span>0 KB VIDEO LEAVES THE STORE</span>
+  </div>
+
+  <section class="hero">
+    <span class="kicker">Smart India Hackathon 2026 · PS 26179 · Team AUREX</span>
+    <h1>SAMGRAHA</h1>
+    <p class="sub">An edge AI platform that watches store cameras locally and turns what they see into three things: a footfall count, a checkout queue forecast, and a shelf restock task — assigned to staff and confirmed by the same camera before it closes. Every image below is either real store footage or the platform's own rendered output, mapped to the module that reads it.</p>
+    <div class="hero-meta">
+      <span class="pill">Zero facial recognition</span>
+      <span class="pill">Zero video retained</span>
+      <span class="pill"><b>5</b> pipeline modules</span>
+      <span class="pill"><b>20</b> automated tests</span>
+    </div>
+  </section>
+
+  <nav class="rail" aria-label="Modules">
+    <a href="#m1">01 Entrance</a>
+    <a href="#m2">02 Tracking</a>
+    <a href="#m3">03 Heatmap</a>
+    <a href="#m4">04 Checkout</a>
+    <a href="#m5">05 Shelf &amp; backroom</a>
+  </nav>
+
+  <!-- MODULE 01 -->
+  <section class="module" id="m1">
+    <div class="module-head">
+      <span class="eyebrow"><span class="num">01</span> app/vision/footfall.py</span>
+      <h2>Counting the door, not the face</h2>
+      <p class="lede">A calibrated virtual tripwire across the entrance turns every crossing into an IN or OUT event. No new hardware — this runs on a store's existing camera feed.</p>
+    </div>
+    <figure class="feed solo">
+      <div class="feed-frame">
+        <img id="img-entrance" src="assets/demo_photos/01_entrance_cctv_monitor.png" alt="Existing in-store CCTV monitor above a snack aisle, showing a live split camera feed">
+        <span class="osd osd-tl">CAM-01 · ENTRANCE</span>
+        <span class="osd osd-br">EXISTING HARDWARE</span>
+        <span class="corner corner-tl"></span><span class="corner corner-tr"></span>
+        <span class="corner corner-bl"></span><span class="corner corner-br"></span>
+      </div>
+      <figcaption>A convenience store's own monitor, mid-shift. SAMGRAHA is designed to sit on top of exactly this kind of existing RTSP/ONVIF feed — the tripwire is two calibrated points in <code class="mono">store_layout.json</code>, not a new camera install.</figcaption>
+    </figure>
+    <p class="detail">Crossing direction comes from the sign of a 2D cross product between the tripwire vector and the vector to the tracked point — a flip in sign between two consecutive frames is a crossing. A five-minute rolling window also compares the current inbound rate to the previous window: a surge past a configured threshold fires an alert on its own, independent of the queue below.</p>
+  </section>
+
+  <!-- MODULE 02 -->
+  <section class="module" id="m2">
+    <div class="module-head">
+      <span class="eyebrow"><span class="num">02</span> app/vision/tracker.py</span>
+      <h2>Tracks, not identities</h2>
+      <p class="lede">Every detection becomes a bounding box and an integer track ID that lives only in memory. No face is ever detected, no embedding is ever computed, and the ID is deleted the moment the track is lost.</p>
+    </div>
+    <div class="feed-grid">
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-track-1" src="assets/demo_photos/02_overhead_detection_mockup_a.png" alt="Overhead store aisle with cyan bounding boxes around anonymous shoppers">
+          <span class="osd osd-tl">CAM-03</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-track-2" src="assets/demo_photos/03_overhead_detection_mockup_b.png" alt="Overhead store aisle with cyan bounding boxes around several shoppers and staff">
+          <span class="osd osd-tl">CAM-03</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-track-3" src="assets/demo_photos/04_aisle_detection_mockup_wide.png" alt="Wide aisle view with tracked shopper and child, bounding boxes labeled Customer and Total">
+          <span class="osd osd-tl">CAM-03</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-track-4" src="assets/demo_photos/05_aisle_detection_mockup_closeup.png" alt="Close tracking view of a shopper with a cart and child, bounding box labeled Customer 507">
+          <span class="osd osd-tl">CAM-03</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+      </figure>
+    </div>
+    <p class="detail" style="margin-top:16px">Concept renders of the overlay a live tracking feed produces: a box and a track number, nothing else. The default backend is a dependency-free background-subtraction tracker (runs on a laptop, no GPU); <code class="mono">--detector yolo</code> swaps in real YOLOv8n + ByteTrack for production accuracy without touching any downstream code.</p>
+    <div class="callout"><b>Strict negative constraint:</b> tracking uses only spatial-temporal Kalman association and IoU overlap — never an appearance embedding. A track lost for more than a couple of seconds is deleted outright, so nobody is re-identified across a gap, let alone across a visit.</div>
+  </section>
+
+  <!-- MODULE 03 — proof -->
+  <section class="module" id="m3">
+    <div class="module-head">
+      <span class="eyebrow"><span class="num">03</span> app/vision/heatmap.py</span>
+      <h2>This heatmap is not a mockup</h2>
+      <p class="lede">A decaying 2D Gaussian accumulator, fed synthetic track points and rendered through the platform's own <code class="mono">render_png_bytes()</code> — the exact function the live dashboard calls at <code class="mono">/api/heatmap/&lt;camera&gt;/traffic.png</code>.</p>
+    </div>
+    <span class="proof-tag">Real code output, generated for this page</span>
+    <div class="feed-pair">
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-heat-raw" src="assets/demo_outputs/heatmap_raw_checkout.png" alt="Raw traffic heatmap: four warm clusters over a dark blue field">
+          <span class="osd osd-tl">TRAFFIC LAYER</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Raw accumulator output — what the dashboard's heatmap panel actually serves.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-heat-overlay" src="assets/demo_outputs/heatmap_overlay_checkout.png" alt="The same heatmap alpha-blended over a real checkout-aisle photo, showing hot spots at busy tills">
+          <span class="osd osd-tl">OVERLAY</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Same grid, alpha-blended per-pixel onto the checkout photo below — hot at the open tills, cold by the closed one.</figcaption>
+      </figure>
+    </div>
+    <p class="detail">Two layers accumulate independently: <b style="color:var(--ink)">traffic</b> increments for every active track, <b style="color:var(--ink)">dwell</b> only when a track's frame-to-frame speed drops under a threshold — distinguishing a browsing shopper from someone just walking past. Both decay each update (0.995/tick) so the map reflects recent activity, not an ever-growing total.</p>
+  </section>
+
+  <!-- MODULE 04 -->
+  <section class="module" id="m4">
+    <div class="module-head">
+      <span class="eyebrow"><span class="num">04</span> app/vision/queue_monitor.py</span>
+      <h2>A closed counter is a formula, not a guess</h2>
+      <p class="lede">Queue state feeds a Congestion Index, <code class="mono">CI = λ / (c·μ)</code> — arrival rate over service capacity. Cross the critical threshold and the platform doesn't just alert: it opens a task.</p>
+    </div>
+    <div class="strip">
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-checkout-1" src="assets/demo_photos/06_checkout_counter_closed.png" alt="A checkout counter with a Counter Closed sign, staff member checking a handheld device">
+          <span class="osd osd-tl">CAM-04</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Counter closed — <code class="mono">c</code> drops, CI rises.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-checkout-2" src="assets/demo_photos/07_checkout_counters_13_14_a.png" alt="Two open checkout counters with a cashier and customers">
+          <span class="osd osd-tl">CAM-04</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Active lane, service rate μ measured.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-checkout-3" src="assets/demo_photos/09_checkout_billing_closeup.png" alt="Close-up of a billing counter with a staff member assisting a customer">
+          <span class="osd osd-tl">CAM-04</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Scan-to-scan gap → μ, the service rate.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-checkout-4" src="assets/demo_photos/08_checkout_wide_aisle.png" alt="Wide view of a long checkout aisle with many counters, one closed">
+          <span class="osd osd-tl">CAM-04</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Whole lane bank — <code class="mono">c</code> = counters open now.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-checkout-5" src="assets/demo_photos/10_checkout_counters_13_14_b.png" alt="Another wide checkout view with several active lanes and shoppers queueing">
+          <span class="osd osd-tl">CAM-04</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Arrival rate λ, from entrance-to-queue history.</figcaption>
+      </figure>
+    </div>
+    <div class="formula">CI ≥ 1.00 → <span style="color:var(--crit)">critical</span> → TaskManager opens a <span class="mono">"lane"</span> task, zone <span class="mono">CHECKOUT</span></div>
+    <p class="detail" style="margin-top:16px">Below critical, two more tiers apply: 0.70–1.00 is a soft <span style="color:var(--warn)">warning</span>, and CI sustained under 0.35 recommends <i>closing</i> a lane and reallocating staff — the same engine that opens a counter also says when to stand one down.</p>
+  </section>
+
+  <!-- MODULE 05 -->
+  <section class="module" id="m5">
+    <div class="module-head">
+      <span class="eyebrow"><span class="num">05</span> app/fusion.py + app/tasks.py</span>
+      <h2>An empty shelf isn't automatically a restock job</h2>
+      <p class="lede">Shelf void detection alone can't tell a stockout from a misplaced item or a slow mover. Fusion cross-references it against backroom stock and sales velocity before a task ever reaches a staff member.</p>
+    </div>
+    <div class="strip">
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-back-1" src="assets/demo_photos/11_backroom_warehouse_empty_aisle.png" alt="Empty tall warehouse aisle with high steel racking">
+          <span class="osd osd-tl">BACKROOM</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>backroom_units, tracked per SKU.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-back-2" src="assets/demo_photos/12_backroom_warehouse_labeled_racks.png" alt="Labeled warehouse shelf racks with bagged and boxed goods">
+          <span class="osd osd-tl">BACKROOM</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Stock exists here → REPLENISHMENT_REQUIRED.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-back-3" src="assets/demo_photos/13_backroom_warehouse_wide_racking.png" alt="Wide warehouse aisle with orange and blue pallet racking">
+          <span class="osd osd-tl">BACKROOM</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Stock absent here → PURCHASING_ALERT, no floor task.</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-back-4" src="assets/demo_photos/14_backroom_warehouse_tall_racking.png" alt="Tall pallet racking warehouse aisle from a low angle">
+          <span class="osd osd-tl">BACKROOM</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>Zero sales velocity → LOW_PRIORITY_OOS (audit, not restock).</figcaption>
+      </figure>
+      <figure class="feed">
+        <div class="feed-frame">
+          <img id="img-back-5" src="assets/demo_photos/15_backroom_warehouse_boxes_foreground.png" alt="Warehouse racking with boxes stacked in the foreground">
+          <span class="osd osd-tl">BACKROOM</span>
+          <span class="corner corner-tl"></span><span class="corner corner-tr"></span><span class="corner corner-bl"></span><span class="corner corner-br"></span>
+        </div>
+        <figcaption>POS unreachable → VISUAL_ALERT_ONLY, never silently dropped.</figcaption>
+      </figure>
+    </div>
+    <p class="detail" style="margin-top:16px">Whatever the cause, the resulting task is scored — <code class="mono">raw = (V/V_ref)·M·(G/G_ref)·A/(1+D)</code>, clamped to a 0–100 priority — assigned to a rostered staff member by zone and current workload, and marking it "done" only starts a re-check: the camera has to confirm the shelf is actually full before the task closes.</p>
+    <div class="callout"><b>Verified, not trusted:</b> a task stuck unresolved after repeated re-checks doesn't silently pass — it escalates to <span class="mono">VERIFY_UNAVAILABLE</span> and asks for a manual look, which is a different outcome from "fixed."</div>
+  </section>
+
+  <!-- ARCHITECTURE RECAP -->
+  <section class="arch">
+    <h2>How the five modules connect</h2>
+    <pre class="mono"><span class="tag">FrameSource</span> (webcam / file / RTSP)
+      │
+      ▼
+<span class="tag">PersonTracker</span>  — <b>motion tracker</b> (default) or <b>YOLOv8+ByteTrack</b> (--detector yolo)
+      │   ephemeral track_id + ground-contact point only — no Re-ID, no faces
+      ├──► <b>FootfallCounter</b>    tripwire crossing + surge detection         (module 01)
+      ├──► <b>HeatmapAccumulator</b> traffic / dwell floor grid                  (module 03)
+      ├──► <b>QueueMonitor</b>       CI = λ/(c·μ), lane recommendations          (module 04)
+      └──► <b>ShelfVoidDetector</b>  per-slot void ratio, occlusion-gated        (module 05)
+              │ out-of-stock
+              ▼
+      <b>Fusion</b>  void × backroom stock × POS velocity → cause + priority
+              ▼
+      <b>TaskManager</b>  assigns via roster, re-verifies against the live camera
+              │
+              ▼
+      SQLite (WAL)  +  dashboard (REST · WebSocket · Tasks panel)</pre>
+
+    <div class="privacy-grid">
+      <div><div class="k">Never computed</div><div class="v">Face embeddings, demographic inference, cross-visit identity, appearance Re-ID</div></div>
+      <div><div class="k">Never stored</div><div class="v">Raw video frames — released from memory the same frame they're decoded</div></div>
+      <div><div class="k">What leaves the edge node</div><div class="v">Aggregate counts, void ratios, queue states, task records — JSON, not pixels</div></div>
+    </div>
+  </section>
+
+  <footer>
+    <h2 style="font-size:20px;margin-bottom:14px">Run it yourself</h2>
+    <div class="run-block"><span class="c"># from edge-retail-ai/, venv active</span><br>python scripts/generate_demo_clips.py<br>python main.py --entrance-source data/demo_clips/entrance.mp4 \<br>&nbsp;&nbsp;--shelf-source data/demo_clips/shelf.mp4 --loop<br><span class="c"># → http://localhost:8000</span></div>
+    <div class="links">
+      <a href="https://github.com/Dhwanitisshah/retail_inteli_plat" target="_blank" rel="noopener">GitHub — retail_inteli_plat</a>
+      <a href="https://github.com/Dhwanitisshah/retail_inteli_plat/blob/main/README.md" target="_blank" rel="noopener">README</a>
+      <a href="https://github.com/Dhwanitisshah/retail_inteli_plat/blob/main/FEATURE_COMPARISON.md" target="_blank" rel="noopener">Feature comparison</a>
+    </div>
+    <p class="fine">Store photography used here for illustration under fair use for a non-commercial hackathon demo; module 02's tracking renders are concept illustrations, not live output. Heatmap images in module 03 are genuine renders from this repository's code.</p>
+  </footer>
+
+</main>
+</body>
+</html>
