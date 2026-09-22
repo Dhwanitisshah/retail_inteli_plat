@@ -7,6 +7,7 @@ translation. WAL mode is enabled for concurrent reader (dashboard) / writer
 (vision pipeline) access, matching the "ACID compliant, resilient to power
 loss" rationale in the spec's MVP hardware table.
 """
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -39,6 +40,35 @@ CREATE TABLE IF NOT EXISTS queue_telemetry (
     people_count INTEGER NOT NULL,
     estimated_wait_seconds REAL,
     synced INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    reason TEXT,
+    zone TEXT,
+    cause TEXT,
+    priority_score INTEGER,
+    priority_bucket TEXT,
+    slot_id TEXT,
+    sku_id TEXT,
+    lane_id TEXT,
+    staff_id TEXT,
+    assignee TEXT,
+    status TEXT NOT NULL,
+    resolution_state TEXT NOT NULL,
+    sla_breached INTEGER DEFAULT 0,
+    created_at REAL NOT NULL,
+    assigned_at REAL,
+    started_at REAL,
+    completed_at REAL,
+    resolved_at REAL,
+    verify_at REAL,
+    verify_attempts INTEGER DEFAULT 0,
+    sla_deadline REAL,
+    history_json TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -126,6 +156,51 @@ class Database:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def upsert_task(self, task: dict):
+        with _lock, self._connect() as conn:
+            conn.execute(
+                """INSERT INTO tasks (task_id, kind, title, reason, zone, cause, priority_score,
+                       priority_bucket, slot_id, sku_id, lane_id, staff_id, assignee, status,
+                       resolution_state, sla_breached, created_at, assigned_at, started_at,
+                       completed_at, resolved_at, verify_at, verify_attempts, sla_deadline,
+                       history_json, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(task_id) DO UPDATE SET
+                       staff_id=excluded.staff_id, assignee=excluded.assignee, status=excluded.status,
+                       resolution_state=excluded.resolution_state, sla_breached=excluded.sla_breached,
+                       assigned_at=excluded.assigned_at, started_at=excluded.started_at,
+                       completed_at=excluded.completed_at, resolved_at=excluded.resolved_at,
+                       verify_at=excluded.verify_at, verify_attempts=excluded.verify_attempts,
+                       history_json=excluded.history_json, updated_at=CURRENT_TIMESTAMP""",
+                (
+                    task["task_id"], task["kind"], task["title"], task["reason"], task["zone"],
+                    task["cause"], task["priority_score"], task["priority_bucket"], task["slot_id"],
+                    task["sku_id"], task["lane_id"], task["staff_id"], task["assignee"], task["status"],
+                    task["resolution_state"], int(task["sla_breached"]), task["created_at"],
+                    task["assigned_at"], task["started_at"], task["completed_at"], task["resolved_at"],
+                    task["verify_at"], task["verify_attempts"], task["sla_deadline"],
+                    json.dumps(task["history"]),
+                ),
+            )
+
+    def list_tasks(self, open_only: bool = False, limit: int = 200):
+        with self._connect() as conn:
+            if open_only:
+                rows = conn.execute(
+                    "SELECT * FROM tasks WHERE status != 'CLOSED' ORDER BY priority_score DESC, created_at ASC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            results = []
+            for r in rows:
+                d = dict(r)
+                d["history"] = json.loads(d.pop("history_json") or "[]")
+                results.append(d)
+            return results
 
     def unsynced_batch(self, table: str, limit: int = 200):
         with self._connect() as conn:

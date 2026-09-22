@@ -92,6 +92,14 @@
   </section>
 
   <section style="grid-column: 1 / -1;">
+    <h2>Tasks — Fusion &amp; Verification</h2>
+    <table id="task-table">
+      <thead><tr><th>Task</th><th>Kind</th><th>Cause</th><th>Priority</th><th>Assignee</th><th>Status</th><th>SLA</th><th></th></tr></thead>
+      <tbody><tr><td colspan="8" class="empty">No tasks yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <section style="grid-column: 1 / -1;">
     <h2>Live Alert Feed</h2>
     <div id="alert-feed"><div class="empty">Waiting for alerts…</div></div>
   </section>
@@ -172,6 +180,52 @@
     img.src = `/api/heatmap/${heatmapCamera}/traffic.png?t=${Date.now()}`;
   }
   setInterval(() => { if (heatmapCamera) updateHeatmapPanel([heatmapCamera]); }, 3000);
+
+  const causeLabel = {
+    REPLENISHMENT_REQUIRED: 'Restock from backroom', PURCHASING_ALERT: 'Reorder from supplier',
+    LOW_PRIORITY_OOS: 'Check for misplacement', VISUAL_ALERT_ONLY: 'Seen on camera, sales feed offline',
+    critical_open_lanes: 'Open another counter',
+  };
+  const statusBadge = {
+    OPEN: 'warn', ASSIGNED: 'warn', STARTED: 'warn', VERIFYING: '', CLOSED: 'ok',
+  };
+  function fmtTaskSla(t) {
+    if (t.sla_breached) return '<span style="color:var(--crit)">overdue</span>';
+    if (!t.sla_deadline) return '—';
+    const remaining = t.sla_deadline - (Date.now() / 1000);
+    return remaining > 0 ? fmtSeconds(remaining) + ' left' : '<span style="color:var(--crit)">overdue</span>';
+  }
+  async function renderTasks() {
+    try {
+      const tasks = await fetch('/api/tasks').then(r => r.json());
+      const tBody = document.querySelector('#task-table tbody');
+      if (!tasks.length) {
+        tBody.innerHTML = '<tr><td colspan="8" class="empty">No tasks yet.</td></tr>';
+        return;
+      }
+      tBody.innerHTML = tasks.map(t => {
+        const badgeClass = t.resolution_state === 'RESOLVED' ? 'ok'
+          : t.resolution_state === 'VERIFY_UNAVAILABLE' ? 'crit'
+          : (statusBadge[t.status] || '');
+        const actionable = t.status !== 'CLOSED';
+        const action = actionable
+          ? `<button class="btn sm" onclick="completeTask('${t.task_id}')">Mark done</button>`
+          : '';
+        return `<tr><td>${t.task_id}<br><span class="label">${(t.title||'').replace(/</g,'&lt;')}</span></td>` +
+               `<td>${t.kind}</td><td>${causeLabel[t.cause] || t.cause}</td>` +
+               `<td><span class="badge">${t.priority_bucket} ${t.priority_score}</span></td>` +
+               `<td>${t.assignee || '—'}</td>` +
+               `<td><span class="badge ${badgeClass}">${t.resolution_state === 'RESOLVED' ? 'RESOLVED' : t.status}</span></td>` +
+               `<td>${fmtTaskSla(t)}</td><td>${action}</td></tr>`;
+      }).join('');
+    } catch (e) { /* task engine not wired up in this run */ }
+  }
+  window.completeTask = async (taskId) => {
+    await fetch(`/api/tasks/${taskId}/complete`, { method: 'POST' });
+    renderTasks();
+  };
+  renderTasks();
+  setInterval(renderTasks, 3000);
 
   function renderAlert(evt) {
     if (alertCount === 0) alertFeed.innerHTML = '';

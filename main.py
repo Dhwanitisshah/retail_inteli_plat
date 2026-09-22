@@ -20,15 +20,22 @@ import json
 import logging
 import threading
 import time
+from dataclasses import dataclass
 
 import cv2
 import uvicorn
 
+from app import fusion
 from app.alerts.dispatcher import AlertDispatcher, AlertEvent, PRIORITY_P1, PRIORITY_P2, PRIORITY_P4
 from app.database import Database
+from app.fusion import PriorityResult
 from app.geometry import Polygon, Tripwire
+from app.inventory import MockInventoryAdapter
+from app.pos import MockPOSAdapter
+from app.roster import Roster, Staff
 from app.server.api import create_app
 from app.state import LIVE_STATE
+from app.tasks import TaskManager
 from app.vision.footfall import FootfallCounter
 from app.vision.heatmap import HeatmapAccumulator
 from app.vision.homography import ArucoHomographyCalibrator, PlanarHomography
@@ -46,9 +53,67 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("main")
 
 
+@dataclass
+class Services:
+    """Everything downstream of raw detection: persistence, alerting, and the
+    fusion/task subsystem (app/fusion.py, app/tasks.py) that turns a shelf
+    void or a congestion forecast into an assigned, tracked, camera-verified
+    task -- the piece the original MVP was missing (it could alert, but
+    never knew whether anyone fixed anything)."""
+    db: Database
+    dispatcher: AlertDispatcher
+    inventory: MockInventoryAdapter
+    pos: MockPOSAdapter
+    tasks: TaskManager
+
+
 def load_layout(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def build_roster(layout) -> Roster:
+    staff = [Staff(staff_id=s["staff_id"], name=s["name"], zones=s["zones"]) for s in layout.get("roster", [])]
+    return Roster(staff)
+
+
+def build_inventory_adapter(cameras) -> MockInventoryAdapter:
+    backroom = {}
+    for cam_config in cameras.values():
+        for s in cam_config.get("shelf_slots", []):
+            backroom[s["sku_id"]] = s.get("backroom_units", 0)
+    return MockInventoryAdapter(backroom=backroom)
+
+
+def make_is_resolved():
+    """Verification predicate for TaskManager.tick(): re-checks the *live*
+    camera/queue signal that originally raised the alert, never a staff
+    self-report -- a task only resolves when the thing that noticed it says
+    it's gone."""
+    def is_resolved(task):
+        snapshot = LIVE_STATE.snapshot()
+        if task.slot_id:
+            slot = snapshot["shelf_slots"].get(task.slot_id)
+            return slot is not None and not slot.get("out_of_stock_alert", False)
+        if task.lane_id:
+            queue = snapshot["queues"].get(task.lane_id)
+            return queue is not None and queue.get("recommendation") != RECOMMENDATION_CRITICAL
+        return False
+    return is_resolved
+
+
+def run_task_ticker(task_manager: TaskManager, stop_event: threading.Event, interval: float = 2.0):
+    """Single dedicated thread for TaskManager.tick() -- verification and
+    SLA-deadline checks must not run concurrently from multiple camera
+    pipeline threads, since they mutate shared task state."""
+    is_resolved = make_is_resolved()
+    logger.info("[tasks] verification ticker started (every %.0fs)", interval)
+    while not stop_event.is_set():
+        try:
+            task_manager.tick(is_resolved)
+        except Exception:
+            logger.exception("[tasks] tick() failed")
+        stop_event.wait(interval)
 
 
 def build_footfall_counters(cam_config, footfall_cfg):
@@ -74,15 +139,18 @@ def build_queue_monitors(cam_config, queue_cfg):
 def build_shelf_detector(cam_config, shelf_cfg):
     slots_cfg = cam_config.get("shelf_slots", [])
     if not slots_cfg:
-        return None
+        return None, []
     slots = [
         ShelfSlot(
             aisle_id=s["aisle_id"], shelf_tier=s["shelf_tier"], slot_id=s["slot_id"],
             sku_id=s["sku_id"], rect=tuple(s["rect"]), expected_facings=s.get("expected_facings", 1),
+            business_impact_multiplier=s.get("business_impact_multiplier", 1.0),
+            baseline_velocity_per_hour=s.get("baseline_velocity_per_hour", 2.0),
+            backroom_units=s.get("backroom_units", 0),
         )
         for s in slots_cfg
     ]
-    return ShelfVoidDetector(slots, shelf_cfg)
+    return ShelfVoidDetector(slots, shelf_cfg), slots
 
 
 def build_homography_source(cam_config):
@@ -101,7 +169,10 @@ def build_homography_source(cam_config):
     return PlanarHomography(calibration["pixel_points"], calibration["metric_points_cm"]), None
 
 
-def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
+def run_camera_pipeline(cam_name, cam_config, args, services: Services, stop_event):
+    db, dispatcher = services.db, services.dispatcher
+    inventory, pos, task_manager = services.inventory, services.pos, services.tasks
+
     source = cam_config.get("source", 0)
     override = getattr(args, f"{cam_name.replace('_cam', '')}_source", None)
     if override is not None:
@@ -116,7 +187,7 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
     tracker = build_tracker(args.detector, CONFIG)
     footfall_counters = build_footfall_counters(cam_config, CONFIG.footfall)
     queue_monitors = build_queue_monitors(cam_config, CONFIG.queue)
-    shelf_detector = build_shelf_detector(cam_config, CONFIG.shelf)
+    shelf_detector, _shelf_slots = build_shelf_detector(cam_config, CONFIG.shelf)
     static_homography, aruco_calibrator = build_homography_source(cam_config)
     label_reader = LabelReader() if (args.show and args.ocr and shelf_detector is not None) else None
 
@@ -220,6 +291,18 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
                                  "predicted_queue_depth": state.predicted_queue_depth,
                                  "arrival_rate_per_minute": state.arrival_rate_per_minute},
                     ))
+                    lane_priority = PriorityResult(
+                        score=90, bucket="P1", raw=0.0, V=state.arrival_rate_per_minute,
+                        G=0.0, A=1.0, D=0.0, cause=RECOMMENDATION_CRITICAL,
+                    )
+                    task = task_manager.create_task(
+                        kind="lane", zone="CHECKOUT",
+                        title=f"Open another counter -- {state.lane_id}",
+                        reason=f"CI={state.congestion_index:.2f}, predicted depth "
+                               f"{state.predicted_queue_depth:.1f} in {int(CONFIG.queue.forecast_horizon_seconds / 60)} min",
+                        cause=RECOMMENDATION_CRITICAL, priority=lane_priority, lane_id=state.lane_id,
+                    )
+                    logger.info("[%s] created task %s (open lane, %s)", cam_name, task.task_id, state.lane_id)
                 elif state.recommendation == RECOMMENDATION_WARNING:
                     dispatcher.dispatch(AlertEvent(
                         event_type="QUEUE_CONGESTION_WARNING",
@@ -277,8 +360,18 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
                         state.slot.aisle_id, state.slot.shelf_tier, state.slot.slot_id,
                         state.slot.sku_id, state.void_ratio, state.out_of_stock_alert,
                     )
-                    was_alerting = getattr(state.slot, "_was_alerting", False)
-                    if state.out_of_stock_alert and not was_alerting:
+                    # Tracked per severity level (not a single "was_alerting" flag) so
+                    # that a slot which already fired LOW_STOCK can still escalate to
+                    # SHELF_OUT_OF_STOCK later -- a single shared flag would let the
+                    # earlier, lower-severity alert permanently suppress the later,
+                    # more urgent one for the rest of the session.
+                    last_level = getattr(state.slot, "_last_alert_level", "none")
+                    current_level = (
+                        "out_of_stock" if state.out_of_stock_alert
+                        else "low_stock" if state.low_stock_warning
+                        else "none"
+                    )
+                    if current_level == "out_of_stock" and last_level != "out_of_stock":
                         dispatcher.dispatch(AlertEvent(
                             event_type="SHELF_OUT_OF_STOCK",
                             priority=PRIORITY_P1,
@@ -287,7 +380,50 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
                             payload={"camera": cam_name, "slot_id": state.slot.slot_id,
                                      "sku_id": state.slot.sku_id, "void_ratio": state.void_ratio},
                         ))
-                    elif state.low_stock_warning and not state.out_of_stock_alert and not was_alerting:
+
+                        # Fusion: combine the visual void with mock POS/inventory signals
+                        # to decide *why* the shelf is empty and how urgent it is, then
+                        # open (and assign) a task -- or, for PURCHASING_ALERT, skip the
+                        # floor task entirely since restocking wouldn't help.
+                        slot = state.slot
+                        pos_available = pos.is_available()
+                        velocity_class = pos.velocity_class(slot.sku_id, slot.baseline_velocity_per_hour)
+                        velocity_per_hour = pos.velocity_per_hour(slot.sku_id)
+                        backroom_units = inventory.get_backroom_units(slot.sku_id)
+                        cause = fusion.classify_cause(pos_available, velocity_class, backroom_units)
+                        gap_elapsed_seconds = (
+                            state.consecutive_alert_frames * CONFIG.shelf.evaluation_interval_seconds
+                        )
+                        priority = fusion.compute_priority(
+                            velocity_per_hour=velocity_per_hour, baseline_per_hour=slot.baseline_velocity_per_hour,
+                            business_impact_multiplier=slot.business_impact_multiplier, void_ratio=state.void_ratio,
+                            gap_elapsed_seconds=gap_elapsed_seconds, backroom_units=backroom_units, cause=cause,
+                        )
+
+                        if cause == fusion.CAUSE_PURCHASING:
+                            dispatcher.dispatch(AlertEvent(
+                                event_type="PURCHASING_ALERT", priority=PRIORITY_P2,
+                                message=f"Reorder needed: {slot.sku_id} -- shelf and backroom both empty "
+                                        f"(velocity {velocity_class}). No floor task created.",
+                                payload={"camera": cam_name, "slot_id": slot.slot_id, "sku_id": slot.sku_id,
+                                         "cause": cause, "priority_score": priority.score},
+                            ))
+                        else:
+                            kind = {
+                                fusion.CAUSE_REPLENISHMENT: "restock",
+                                fusion.CAUSE_LOW_PRIORITY: "audit",
+                                fusion.CAUSE_VISUAL_ONLY: "check",
+                            }[cause]
+                            task = task_manager.create_task(
+                                kind=kind, zone=slot.aisle_id,
+                                title=f"{kind.capitalize()} {slot.sku_id} at {slot.slot_id}",
+                                reason=f"{cause}: void {state.void_ratio:.2f}, backroom {backroom_units} units, "
+                                       f"velocity {velocity_class}",
+                                cause=cause, priority=priority, slot_id=slot.slot_id, sku_id=slot.sku_id,
+                            )
+                            logger.info("[%s] created task %s (%s, %s %d) for %s",
+                                        cam_name, task.task_id, cause, priority.bucket, priority.score, slot.slot_id)
+                    elif current_level == "low_stock" and last_level == "none":
                         dispatcher.dispatch(AlertEvent(
                             event_type="SHELF_LOW_STOCK",
                             priority=PRIORITY_P2,
@@ -296,7 +432,7 @@ def run_camera_pipeline(cam_name, cam_config, args, db, dispatcher, stop_event):
                             payload={"camera": cam_name, "slot_id": state.slot.slot_id,
                                      "sku_id": state.slot.sku_id, "fill_ratio": state.fill_ratio},
                         ))
-                    state.slot._was_alerting = state.out_of_stock_alert or state.low_stock_warning
+                    state.slot._last_alert_level = current_level
 
         if args.show:
             display = frame.copy()
@@ -356,13 +492,18 @@ def main():
 
     db = Database(CONFIG.db_path)
     dispatcher = AlertDispatcher(CONFIG.alerts)
+    roster = build_roster(layout)
+    inventory = build_inventory_adapter(layout.get("cameras", {}))
+    pos = MockPOSAdapter()
+    task_manager = TaskManager(roster, db=db)
+    services = Services(db=db, dispatcher=dispatcher, inventory=inventory, pos=pos, tasks=task_manager)
 
     stop_event = threading.Event()
     threads = []
     for cam_name, cam_config in cameras.items():
         t = threading.Thread(
             target=run_camera_pipeline,
-            args=(cam_name, cam_config, args, db, dispatcher, stop_event),
+            args=(cam_name, cam_config, args, services, stop_event),
             daemon=True,
         )
         t.start()
@@ -372,6 +513,10 @@ def main():
         logger.error("No camera pipelines started.")
         return
 
+    ticker = threading.Thread(target=run_task_ticker, args=(task_manager, stop_event), daemon=True)
+    ticker.start()
+    threads.append(ticker)
+
     if args.no_server:
         try:
             while any(t.is_alive() for t in threads):
@@ -380,7 +525,7 @@ def main():
             stop_event.set()
         return
 
-    app = create_app(db, dispatcher)
+    app = create_app(db, dispatcher, task_manager, pos)
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     finally:

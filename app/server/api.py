@@ -16,21 +16,35 @@ import asyncio
 import queue
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel
 
 from app.database import Database
 from app.alerts.dispatcher import AlertDispatcher
+from app.pos import MockPOSAdapter
 from app.state import LIVE_STATE
+from app.tasks import TaskManager
 from config import CONFIG
 
 logger = logging.getLogger("api")
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(db: Database, dispatcher: AlertDispatcher) -> FastAPI:
+class SaleRequest(BaseModel):
+    sku_id: str
+    units: int = 1
+
+
+class POSAvailabilityRequest(BaseModel):
+    available: bool
+
+
+def create_app(db: Database, dispatcher: AlertDispatcher,
+               task_manager: Optional[TaskManager] = None,
+               pos: Optional[MockPOSAdapter] = None) -> FastAPI:
     app = FastAPI(title="Edge Retail Intelligence Platform", version="0.1.0")
 
     alert_queue: "queue.Queue[dict]" = queue.Queue()
@@ -65,6 +79,69 @@ def create_app(db: Database, dispatcher: AlertDispatcher) -> FastAPI:
     @app.get("/api/shelf/alerts")
     async def shelf_alerts(limit: int = 100):
         return db.active_shelf_alerts(limit=limit)
+
+    @app.get("/api/tasks")
+    async def list_tasks(open_only: bool = False):
+        if task_manager is None:
+            return []
+        return [t.to_dict() for t in task_manager.list_tasks(open_only=open_only)]
+
+    @app.get("/api/tasks/{task_id}")
+    async def get_task(task_id: str):
+        if task_manager is None:
+            raise HTTPException(status_code=404, detail="task engine not wired up")
+        task = task_manager.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"no such task '{task_id}'")
+        return task.to_dict()
+
+    @app.post("/api/tasks/{task_id}/start")
+    async def start_task(task_id: str):
+        if task_manager is None:
+            raise HTTPException(status_code=404, detail="task engine not wired up")
+        task = task_manager.mark_started(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"no such open task '{task_id}'")
+        return task.to_dict()
+
+    @app.post("/api/tasks/{task_id}/complete")
+    async def complete_task(task_id: str):
+        """Simulates a staff member marking the task done on a handheld.
+        This does NOT resolve the task by itself -- the verification ticker
+        independently re-checks the live camera/queue signal before closing
+        it, same as the reference design ("a tap doesn't fix anything, the
+        camera confirms it")."""
+        if task_manager is None:
+            raise HTTPException(status_code=404, detail="task engine not wired up")
+        task = task_manager.mark_completed(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"no such open task '{task_id}'")
+        return task.to_dict()
+
+    @app.get("/api/pos/status")
+    async def pos_status():
+        if pos is None:
+            raise HTTPException(status_code=404, detail="POS adapter not wired up")
+        return {"available": pos.is_available()}
+
+    @app.post("/api/pos/availability")
+    async def set_pos_availability(body: POSAvailabilityRequest):
+        """Simulates a POS outage/recovery, so you can watch the fusion
+        engine fall back to VISUAL_ALERT_ONLY and back."""
+        if pos is None:
+            raise HTTPException(status_code=404, detail="POS adapter not wired up")
+        pos.set_available(body.available)
+        return {"available": pos.is_available()}
+
+    @app.post("/api/pos/sale")
+    async def record_sale(sale: SaleRequest):
+        """Records a mock sale, feeding the velocity classifier the fusion
+        engine uses for cause classification and priority scoring. Stands
+        in for a real POS transaction feed (see app/pos.py)."""
+        if pos is None:
+            raise HTTPException(status_code=404, detail="POS adapter not wired up")
+        pos.record_sale(sale.sku_id, sale.units)
+        return {"sku_id": sale.sku_id, "velocity_per_hour": pos.velocity_per_hour(sale.sku_id)}
 
     @app.get("/api/heatmap/{camera_name}/{layer}.png")
     async def heatmap_png(camera_name: str, layer: str):

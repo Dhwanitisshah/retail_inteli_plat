@@ -33,7 +33,10 @@
           "slot_id": "A4_T2_S1",
           "sku_id": "SKU_8901030",
           "rect": [0, 100, 210, 150],
-          "expected_facings": 3
+          "expected_facings": 3,
+          "business_impact_multiplier": 1.10,
+          "baseline_velocity_per_hour": 2.2,
+          "backroom_units": 8
         },
         {
           "aisle_id": "AISLE_04",
@@ -41,7 +44,10 @@
           "slot_id": "A4_T2_S2",
           "sku_id": "SKU_8902140",
           "rect": [210, 100, 210, 150],
-          "expected_facings": 3
+          "expected_facings": 3,
+          "business_impact_multiplier": 1.00,
+          "baseline_velocity_per_hour": 1.6,
+          "backroom_units": 12
         },
         {
           "aisle_id": "AISLE_04",
@@ -49,9 +55,17 @@
           "slot_id": "A4_T2_S3",
           "sku_id": "SKU_8903511",
           "rect": [420, 100, 210, 150],
-          "expected_facings": 3
+          "expected_facings": 3,
+          "business_impact_multiplier": 1.20,
+          "baseline_velocity_per_hour": 7.4,
+          "backroom_units": 0
         }
       ]
     }
-  }
+  },
+  "roster": [
+    { "staff_id": "STF-01", "name": "Ravi", "zones": ["AISLE_04", "CHECKOUT"] },
+    { "staff_id": "STF-02", "name": "Sneha", "zones": ["AISLE_04"] },
+    { "staff_id": "STF-03", "name": "Imran", "zones": ["CHECKOUT"] }
+  ]
 }

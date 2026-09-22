@@ -49,13 +49,19 @@ def generate_checkout_clip(path, n_frames=90, fps=15):
     out.release()
 
 
-def generate_shelf_clip(path, n_frames=60, fps=15):
-    """Shelf slot A4_T2_S1 starts stocked (textured) then is emptied (flat)."""
+def generate_shelf_clip(path, n_frames=90, fps=15):
+    """Slot A4_T2_S1 goes stocked -> empty -> restocked (each a third of the
+    clip). Run with `--loop` for a couple of real minutes (shelf evaluation
+    is throttled to every `evaluation_interval_seconds`, so it takes real
+    wall-clock time, not video duration, to accumulate the 3 consecutive
+    over-threshold reads the alert needs) to watch a restock task actually
+    get created *and* resolved once the camera sees the shelf filled again."""
     out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
     rng = np.random.default_rng(7)
+    third = n_frames // 3
     for i in range(n_frames):
         frame = np.full((H, W, 3), 60, dtype=np.uint8)
-        if i < n_frames // 3:
+        if i < third or i >= 2 * third:
             frame[100:250, 0:210] = rng.integers(0, 255, size=(150, 210, 3), dtype=np.uint8)
         out.write(frame)
     out.release()

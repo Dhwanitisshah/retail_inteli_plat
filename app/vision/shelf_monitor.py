@@ -37,6 +37,12 @@ class ShelfSlot:
     sku_id: str
     rect: Tuple[int, int, int, int]  # x, y, w, h in pixel coordinates
     expected_facings: int = 1
+    # Business context for the fusion/priority engine (app/fusion.py) -- not
+    # used by void detection itself, just carried alongside the slot so
+    # main.py doesn't need a second lookup table.
+    business_impact_multiplier: float = 1.0
+    baseline_velocity_per_hour: float = 2.0
+    backroom_units: int = 0
 
 
 @dataclass

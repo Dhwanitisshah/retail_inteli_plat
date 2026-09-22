@@ -15,7 +15,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.alerts.dispatcher import AlertDispatcher, AlertEvent
 from app.database import Database
+from app.fusion import (
+    CAUSE_LOW_PRIORITY, CAUSE_PURCHASING, CAUSE_REPLENISHMENT, CAUSE_VISUAL_ONLY,
+    classify_cause, compute_priority,
+)
 from app.geometry import Polygon, Tripwire
+from app.inventory import MockInventoryAdapter
+from app.pos import VELOCITY_HIGH, VELOCITY_LOW, VELOCITY_UNKNOWN, MockPOSAdapter
+from app.roster import Roster, Staff
+from app.tasks import RESOLUTION_RESOLVED, RESOLUTION_VERIFY_UNAVAILABLE, TaskManager
 from app.vision.footfall import FootfallCounter
 from app.vision.heatmap import HeatmapAccumulator
 from app.vision.homography import PlanarHomography
@@ -220,6 +228,130 @@ def test_ocr_graceful_fallback():
     print(f"PASS: OCR module never raises (available={reader.available})")
 
 
+def test_pos_adapter_velocity_classification():
+    pos = MockPOSAdapter(window_seconds=3600.0, high_multiplier=1.5, low_multiplier=0.5)
+    # 0 sales against a real baseline is legitimately LOW, not UNKNOWN -- UNKNOWN is
+    # reserved for "no trustworthy baseline" or "POS unavailable" (checked below).
+    assert pos.velocity_class("sku_a", baseline_per_hour=10.0) == VELOCITY_LOW
+
+    pos.record_sale("sku_a", 20)  # 20 units in the last hour -> 20/h vs baseline 10/h -> ratio 2.0 -> HIGH
+    assert pos.velocity_class("sku_a", baseline_per_hour=10.0) == VELOCITY_HIGH
+
+    pos.set_available(False)
+    assert pos.velocity_per_hour("sku_a") is None
+    assert pos.velocity_class("sku_a", baseline_per_hour=10.0) == VELOCITY_UNKNOWN
+    pos.set_available(True)
+
+    assert pos.velocity_class("sku_b", baseline_per_hour=0.5) == VELOCITY_UNKNOWN, "baseline below min_baseline_units must never resolve to LOW"
+    print("PASS: mock POS adapter velocity classification (HIGH / UNKNOWN on outage / UNKNOWN on thin baseline)")
+
+
+def test_inventory_adapter_transfer_bounds():
+    inv = MockInventoryAdapter(backroom={"sku_a": 5}, system={"sku_a": 20})
+    assert inv.get_backroom_units("sku_a") == 5
+    assert inv.get_backroom_units("sku_missing") == 0
+
+    moved = inv.transfer_to_shelf("sku_a", requested_units=3)
+    assert moved == 3 and inv.get_backroom_units("sku_a") == 2
+
+    moved = inv.transfer_to_shelf("sku_a", requested_units=99)
+    assert moved == 2 and inv.get_backroom_units("sku_a") == 0, "transfer must never exceed what's actually in backroom"
+    print("PASS: mock inventory adapter backroom transfer bounds")
+
+
+def test_fusion_cause_classification():
+    assert classify_cause(pos_available=False, velocity_class=VELOCITY_HIGH, backroom_units=5) == CAUSE_VISUAL_ONLY
+    assert classify_cause(pos_available=True, velocity_class=VELOCITY_LOW, backroom_units=5) == CAUSE_LOW_PRIORITY, \
+        "LOW velocity must win even with backroom stock -- likely misplacement, not a stockout"
+    assert classify_cause(pos_available=True, velocity_class=VELOCITY_HIGH, backroom_units=5) == CAUSE_REPLENISHMENT
+    assert classify_cause(pos_available=True, velocity_class=VELOCITY_HIGH, backroom_units=0) == CAUSE_PURCHASING
+    print("PASS: fusion cause classification truth table")
+
+
+def test_fusion_priority_bounds_and_bucket():
+    low = compute_priority(velocity_per_hour=0.5, baseline_per_hour=2.0, business_impact_multiplier=1.0,
+                            void_ratio=0.7, gap_elapsed_seconds=60, backroom_units=0, cause=CAUSE_PURCHASING)
+    high = compute_priority(velocity_per_hour=50.0, baseline_per_hour=2.0, business_impact_multiplier=1.3,
+                             void_ratio=1.0, gap_elapsed_seconds=3600, backroom_units=10, cause=CAUSE_REPLENISHMENT)
+    for result in (low, high):
+        assert 0 <= result.score <= 100, result.score
+    assert high.score > low.score, "a fast-selling, long-empty, in-stock-backroom slot must outrank a slow one"
+    assert high.bucket in ("P0", "P1")
+    assert low.bucket in ("P2", "P3")
+    print("PASS: fusion priority score bounded [0,100] and correctly bucketed")
+
+
+def test_roster_assignment_scoring():
+    roster = Roster([
+        Staff(staff_id="S1", name="Alice", zones=["AISLE_04"]),
+        Staff(staff_id="S2", name="Bob", zones=["CHECKOUT"]),
+    ])
+    chosen = roster.best_candidate("AISLE_04")
+    assert chosen.staff_id == "S1", "the only in-zone, idle candidate should win"
+
+    roster.enqueue("S1", "T-0001")  # Alice is now busy
+    chosen = roster.best_candidate("AISLE_04")
+    assert chosen.staff_id == "S2", \
+        "an idle out-of-zone staffer can outscore a busy in-zone one (0.5 idle-out-of-zone > 0.175 busy-in-zone)"
+
+    roster.release("S1", "T-0001")
+    assert roster.staff["S1"].active_task_id is None
+    chosen = roster.best_candidate("AISLE_04")
+    assert chosen.staff_id == "S1", "once freed, the in-zone idle staffer wins again"
+    print("PASS: roster assignment scoring (in-zone vs. workload trade-off)")
+
+
+def test_task_lifecycle_resolved_by_camera():
+    roster = Roster([Staff(staff_id="S1", name="Alice", zones=["AISLE_04"])])
+    tm = TaskManager(roster, sla_minutes={"restock": 60}, verify_after_seconds=0.0,
+                      recheck_interval_seconds=0.0, max_verify_attempts=3)
+    priority = compute_priority(velocity_per_hour=5.0, baseline_per_hour=2.0, business_impact_multiplier=1.0,
+                                 void_ratio=0.9, gap_elapsed_seconds=300, backroom_units=8, cause=CAUSE_REPLENISHMENT)
+    task = tm.create_task(kind="restock", zone="AISLE_04", title="Restock sugar", reason="void 0.90",
+                           cause=CAUSE_REPLENISHMENT, priority=priority, slot_id="A4_T2_S1", sku_id="SKU_TEST")
+    assert task.staff_id == "S1" and task.status == "ASSIGNED"
+
+    tm.mark_completed(task.task_id)
+    assert task.status == "VERIFYING"
+
+    tm.tick(is_resolved=lambda t: True)  # camera now sees the shelf restocked
+    assert task.resolution_state == RESOLUTION_RESOLVED and task.status == "CLOSED"
+    assert roster.staff["S1"].active_task_id is None, "staff must be freed once the task closes"
+    print("PASS: task lifecycle resolves when the camera confirms the fix")
+
+
+def test_task_lifecycle_escalates_to_verify_unavailable():
+    roster = Roster([Staff(staff_id="S1", name="Alice", zones=["AISLE_04"])])
+    tm = TaskManager(roster, sla_minutes={"restock": 60}, verify_after_seconds=0.0,
+                      recheck_interval_seconds=0.0, max_verify_attempts=2)
+    priority = compute_priority(velocity_per_hour=5.0, baseline_per_hour=2.0, business_impact_multiplier=1.0,
+                                 void_ratio=0.9, gap_elapsed_seconds=300, backroom_units=8, cause=CAUSE_REPLENISHMENT)
+    task = tm.create_task(kind="restock", zone="AISLE_04", title="Restock sugar", reason="void 0.90",
+                           cause=CAUSE_REPLENISHMENT, priority=priority, slot_id="A4_T2_S1", sku_id="SKU_TEST")
+    tm.mark_completed(task.task_id)
+
+    always_unresolved = lambda t: False
+    for _ in range(2):
+        tm.tick(is_resolved=always_unresolved)
+    assert task.resolution_state == RESOLUTION_VERIFY_UNAVAILABLE and task.status == "CLOSED"
+    assert task.verify_attempts == 2
+    print("PASS: task escalates to VERIFY_UNAVAILABLE after exhausting retries, never silently 'resolved'")
+
+
+def test_task_sla_breach_flag():
+    roster = Roster([Staff(staff_id="S1", name="Alice", zones=["AISLE_04"])])
+    tm = TaskManager(roster, sla_minutes={"restock": 0}, verify_after_seconds=999999.0)
+    priority = compute_priority(velocity_per_hour=5.0, baseline_per_hour=2.0, business_impact_multiplier=1.0,
+                                 void_ratio=0.9, gap_elapsed_seconds=300, backroom_units=8, cause=CAUSE_REPLENISHMENT)
+    task = tm.create_task(kind="restock", zone="AISLE_04", title="Restock sugar", reason="void 0.90",
+                           cause=CAUSE_REPLENISHMENT, priority=priority, slot_id="A4_T2_S1", sku_id="SKU_TEST")
+    assert task.sla_breached is False
+    tm.tick(is_resolved=lambda t: False)
+    assert task.sla_breached is True, "0-minute SLA must already be breached on the first tick"
+    assert task.status != "CLOSED", "a breach alone doesn't close the task -- it can still resolve, just late"
+    print("PASS: SLA-deadline breach flag set independently of verification state")
+
+
 def test_database_persistence():
     tmp_dir = tempfile.mkdtemp(prefix="retail_edge_test_")
     db_path = os.path.join(tmp_dir, "test.db")
@@ -260,6 +392,14 @@ if __name__ == "__main__":
     test_shelf_void_gap_cm_with_homography()
     test_heatmap_accumulator_updates_and_renders()
     test_ocr_graceful_fallback()
+    test_pos_adapter_velocity_classification()
+    test_inventory_adapter_transfer_bounds()
+    test_fusion_cause_classification()
+    test_fusion_priority_bounds_and_bucket()
+    test_roster_assignment_scoring()
+    test_task_lifecycle_resolved_by_camera()
+    test_task_lifecycle_escalates_to_verify_unavailable()
+    test_task_sla_breach_flag()
     test_database_persistence()
     test_alert_dispatcher_fanout()
     print("\nAll smoke tests passed.")
