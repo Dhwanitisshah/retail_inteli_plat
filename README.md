@@ -2,6 +2,11 @@
 
 **Team AUREX · Smart India Hackathon 2026 · Problem Statement 26179 (Hardware / Miscellaneous)**
 
+📺 **[Illustrated walkthrough (live demo page)](https://claude.ai/artifact/FRPQemet67X3Tigs88vQ6J)** — all 5
+pipeline modules paired with real store/checkout/backroom photos, including
+a heatmap that's genuine code output, not a mockup. *(Private Claude
+artifact link — open it and use its Share menu if it asks for access.)*
+
 An edge-native computer vision platform that runs entirely on in-store
 hardware: **entrance footfall tracking**, **checkout queue alerting with a
 predictive Congestion Index**, and **class-agnostic shelf void detection**
